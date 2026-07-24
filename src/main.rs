@@ -43,6 +43,8 @@ struct App {
     quit_menu_id: Option<MenuId>,
     proxy: EventLoopProxy<UserEvent>,
     autostart: Option<Flourish>,
+    /// Set when startup fails; reported by `main` after the loop unwinds.
+    fatal_error: Option<(String, String)>,
 }
 
 impl App {
@@ -60,6 +62,7 @@ impl App {
             quit_menu_id: None,
             proxy,
             autostart,
+            fatal_error: None,
         }
     }
 
@@ -109,6 +112,18 @@ impl App {
             }
             SignalResult::HideImmediately => self.hide_overlay(),
         }
+    }
+
+    /// Records a fatal startup problem for `main` to report once the event loop
+    /// has unwound.
+    ///
+    /// The dialog is deliberately not shown from here: it is a blocking modal,
+    /// and running one from inside an event-loop callback risks a hang, which
+    /// would be a worse failure than the one being reported.
+    fn fail(&mut self, headline: &str, error: &impl std::fmt::Display) {
+        eprintln!("{headline}: {error}");
+        self.fatal_error
+            .get_or_insert_with(|| (headline.to_owned(), error.to_string()));
     }
 
     fn hide_overlay(&mut self) {
@@ -251,13 +266,13 @@ impl ApplicationHandler<UserEvent> for App {
         }
 
         if let Err(error) = self.create_window_and_renderer(event_loop) {
-            report_fatal("Flourish could not start", &error.to_string());
+            self.fail("Flourish could not start", &error);
             event_loop.exit();
             return;
         }
 
         if let Err(error) = self.create_tray() {
-            report_fatal("Flourish could not create its menu", &error.to_string());
+            self.fail("Flourish could not create its menu", &error);
             event_loop.exit();
             return;
         }
@@ -473,12 +488,11 @@ fn distance_to_segment(point: [f32; 2], start: [f32; 2], end: [f32; 2]) -> f32 {
     ((point[0] - nearest[0]).powi(2) + (point[1] - nearest[1]).powi(2)).sqrt()
 }
 
-/// Reports a fatal startup problem somewhere the user will actually see it.
+/// Shows a fatal startup problem somewhere the user will actually see it.
 ///
 /// A menu-bar app launched from Finder has no terminal attached, so `eprintln!`
 /// alone means the app simply never appears and never says why.
-fn report_fatal(headline: &str, detail: &str) {
-    eprintln!("{headline}: {detail}");
+fn show_fatal_dialog(headline: &str, detail: &str) {
     rfd::MessageDialog::new()
         .set_level(rfd::MessageLevel::Error)
         .set_title(headline)
@@ -514,6 +528,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let proxy = event_loop.create_proxy();
     let mut app = App::new(proxy, autostart);
     event_loop.run_app(&mut app)?;
+
+    // Reported here rather than from inside the loop, where a blocking modal
+    // could hang instead of explaining itself.
+    if let Some((headline, detail)) = app.fatal_error {
+        show_fatal_dialog(&headline, &detail);
+        std::process::exit(1);
+    }
     Ok(())
 }
 
