@@ -344,7 +344,10 @@ impl ApplicationHandler<UserEvent> for App {
             // full-screen window they can no longer talk to.
             WindowEvent::Focused(false) => {
                 let now = self.now();
-                if Duration::from_secs_f32(self.timeline.effect_time(now)) >= FOCUS_GRACE {
+                // Compared in seconds rather than by rebuilding a Duration,
+                // because Duration::from_secs_f32 panics on inputs a float
+                // clock could produce.
+                if self.timeline.effect_time(now) >= FOCUS_GRACE.as_secs_f32() {
                     self.handle_signal(now);
                 }
             }
