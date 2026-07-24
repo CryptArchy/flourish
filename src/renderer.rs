@@ -1,0 +1,349 @@
+use std::sync::Arc;
+
+use bytemuck::{Pod, Zeroable};
+use flourish::Flourish;
+use thiserror::Error;
+use wgpu::util::DeviceExt;
+use winit::{dpi::PhysicalSize, window::Window};
+
+use crate::doom_fire::{DoomFireSimulation, SIZE as DOOM_SIZE};
+use crate::gravel::GravelEffect;
+
+#[derive(Debug, Error)]
+pub enum RendererError {
+    #[error("could not create a GPU surface: {0}")]
+    CreateSurface(#[from] wgpu::CreateSurfaceError),
+    #[error("no compatible graphics adapter was found")]
+    NoAdapter,
+    #[error("could not create a GPU device: {0}")]
+    RequestDevice(#[from] wgpu::RequestDeviceError),
+    #[error("the window surface exposes no color formats")]
+    NoSurfaceFormat,
+    #[error("the window surface cannot composite transparent pixels")]
+    NoTransparentAlphaMode,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RenderOutcome {
+    Presented,
+    Reconfigure,
+    SurfaceLost,
+    Skipped,
+    ValidationError,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct Uniforms {
+    resolution: [f32; 2],
+    time: f32,
+    exit_progress: f32,
+    premultiply_alpha: f32,
+    effect_id: f32,
+    padding: [f32; 2],
+}
+
+pub struct FlourishRenderer {
+    surface: wgpu::Surface<'static>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    config: wgpu::SurfaceConfiguration,
+    pipeline: wgpu::RenderPipeline,
+    uniforms: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+    doom_fire: DoomFireSimulation,
+    gravel: GravelEffect,
+    size: PhysicalSize<u32>,
+    premultiply_alpha: f32,
+}
+
+impl FlourishRenderer {
+    pub async fn new(window: Arc<Window>) -> Result<Self, RendererError> {
+        let size = window.inner_size();
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(
+            Box::new(Arc::clone(&window)),
+        ));
+        let surface = instance.create_surface(window)?;
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                force_fallback_adapter: false,
+                compatible_surface: Some(&surface),
+                apply_limit_buckets: false,
+            })
+            .await
+            .map_err(|_| RendererError::NoAdapter)?;
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("Flourish device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                experimental_features: wgpu::ExperimentalFeatures::disabled(),
+                memory_hints: wgpu::MemoryHints::MemoryUsage,
+                trace: wgpu::Trace::Off,
+            })
+            .await?;
+
+        let capabilities = surface.get_capabilities(&adapter);
+        let format = capabilities
+            .formats
+            .iter()
+            .copied()
+            .find(wgpu::TextureFormat::is_srgb)
+            .or_else(|| capabilities.formats.first().copied())
+            .ok_or(RendererError::NoSurfaceFormat)?;
+        let alpha_mode = select_alpha_mode(&capabilities.alpha_modes)
+            .ok_or(RendererError::NoTransparentAlphaMode)?;
+
+        let width = size.width.max(1);
+        let height = size.height.max(1);
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format,
+            width,
+            height,
+            present_mode: wgpu::PresentMode::AutoVsync,
+            desired_maximum_frame_latency: 2,
+            alpha_mode,
+            view_formats: vec![],
+            color_space: wgpu::SurfaceColorSpace::Auto,
+        };
+        surface.configure(&device, &config);
+
+        let premultiply_alpha = if alpha_mode == wgpu::CompositeAlphaMode::PreMultiplied {
+            1.0
+        } else {
+            0.0
+        };
+        let doom_fire = DoomFireSimulation::new(&device);
+        let gravel = GravelEffect::new(&device, format, size);
+        let (pipeline, uniform_buffer, bind_group) = create_pipeline(
+            &device,
+            format,
+            size_to_resolution(size),
+            premultiply_alpha,
+            doom_fire.render_layout(),
+        );
+
+        Ok(Self {
+            surface,
+            device,
+            queue,
+            config,
+            pipeline,
+            uniforms: uniform_buffer,
+            bind_group,
+            doom_fire,
+            gravel,
+            size,
+            premultiply_alpha,
+        })
+    }
+
+    pub fn resize(&mut self, size: PhysicalSize<u32>) {
+        if size.width == 0 || size.height == 0 {
+            return;
+        }
+
+        self.size = size;
+        self.config.width = size.width;
+        self.config.height = size.height;
+        self.surface.configure(&self.device, &self.config);
+        self.gravel.resize(size);
+    }
+
+    pub fn start_effect(&mut self, effect: Flourish) {
+        match effect {
+            Flourish::DoomFire => self.doom_fire.reset(&self.queue),
+            Flourish::GravelFall => self.gravel.reset(self.size),
+            _ => {}
+        }
+    }
+
+    pub fn render(&mut self, effect: Flourish, time: f32, exit_progress: f32) -> RenderOutcome {
+        let uniforms = Uniforms {
+            resolution: size_to_resolution(self.size),
+            time,
+            exit_progress,
+            premultiply_alpha: self.premultiply_alpha,
+            effect_id: effect.shader_id(),
+            padding: DOOM_SIZE,
+        };
+        self.queue
+            .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
+        if effect == Flourish::GravelFall {
+            self.gravel.prepare(&self.queue, time, exit_progress);
+        }
+
+        let (frame, reconfigure_after_present) = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(frame) => (frame, false),
+            wgpu::CurrentSurfaceTexture::Suboptimal(frame) => (frame, true),
+            wgpu::CurrentSurfaceTexture::Outdated => return RenderOutcome::Reconfigure,
+            wgpu::CurrentSurfaceTexture::Lost => return RenderOutcome::SurfaceLost,
+            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                return RenderOutcome::Skipped;
+            }
+            wgpu::CurrentSurfaceTexture::Validation => return RenderOutcome::ValidationError,
+        };
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Flourish frame encoder"),
+            });
+        if effect == Flourish::DoomFire {
+            self.doom_fire
+                .encode_step(&mut encoder, &self.queue, time, exit_progress);
+        }
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Flourish render pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            if effect == Flourish::GravelFall {
+                self.gravel.render(&mut pass);
+            } else {
+                pass.set_pipeline(&self.pipeline);
+                pass.set_bind_group(0, &self.bind_group, &[]);
+                pass.set_bind_group(1, self.doom_fire.render_bind_group(), &[]);
+                pass.draw(0..3, 0..1);
+            }
+        }
+        self.queue.submit(Some(encoder.finish()));
+        self.queue.present(frame);
+        if reconfigure_after_present {
+            self.surface.configure(&self.device, &self.config);
+        }
+        RenderOutcome::Presented
+    }
+}
+
+fn create_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    resolution: [f32; 2],
+    premultiply_alpha: f32,
+    doom_fire_layout: &wgpu::BindGroupLayout,
+) -> (wgpu::RenderPipeline, wgpu::Buffer, wgpu::BindGroup) {
+    let uniforms = Uniforms {
+        resolution,
+        time: 0.0,
+        exit_progress: 0.0,
+        premultiply_alpha,
+        effect_id: Flourish::Curtain.shader_id(),
+        padding: DOOM_SIZE,
+    };
+    let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Flourish uniforms"),
+        contents: bytemuck::bytes_of(&uniforms),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Flourish bind group layout"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Flourish bind group"),
+        layout: &bind_group_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: uniform_buffer.as_entire_binding(),
+        }],
+    });
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Flourish shader catalog"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("shaders/flourishes.wgsl").into()),
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Flourish pipeline layout"),
+        bind_group_layouts: &[Some(&bind_group_layout), Some(doom_fire_layout)],
+        immediate_size: 0,
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Flourish pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vertex_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fragment_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::REPLACE),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    });
+
+    (pipeline, uniform_buffer, bind_group)
+}
+
+fn select_alpha_mode(modes: &[wgpu::CompositeAlphaMode]) -> Option<wgpu::CompositeAlphaMode> {
+    modes
+        .contains(&wgpu::CompositeAlphaMode::PreMultiplied)
+        .then_some(wgpu::CompositeAlphaMode::PreMultiplied)
+        .or_else(|| {
+            modes
+                .contains(&wgpu::CompositeAlphaMode::PostMultiplied)
+                .then_some(wgpu::CompositeAlphaMode::PostMultiplied)
+        })
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn size_to_resolution(size: PhysicalSize<u32>) -> [f32; 2] {
+    // Physical display dimensions are many orders of magnitude below the first
+    // u32 values that f32 cannot represent usefully as pixel coordinates.
+    [size.width as f32, size.height as f32]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::select_alpha_mode;
+    use wgpu::CompositeAlphaMode;
+
+    #[test]
+    fn premultiplied_alpha_is_preferred_regardless_of_reported_order() {
+        let modes = [
+            CompositeAlphaMode::PostMultiplied,
+            CompositeAlphaMode::PreMultiplied,
+        ];
+
+        assert_eq!(
+            select_alpha_mode(&modes),
+            Some(CompositeAlphaMode::PreMultiplied)
+        );
+    }
+}
