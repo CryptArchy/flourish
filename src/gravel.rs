@@ -16,6 +16,11 @@ const ROCK_VERTICES: u32 = 27;
 const SPAWN_RATE: f32 = 86.0;
 const HOLD_GRAVITY: f32 = 1.08;
 const RELEASE_GRAVITY: f32 = 2.35;
+// A stone may never occupy more than this fraction of the width. Radii are
+// derived by dividing by the aspect ratio, so a portrait or rotated display
+// would otherwise produce stones wider than the screen and a spawn span that
+// runs backwards.
+const MAX_HORIZONTAL_RADIUS: f32 = 0.45;
 
 const GRAVEL_PALETTE: [[f32; 4]; 6] = [
     [0.48, 0.41, 0.31, 1.0],
@@ -150,13 +155,21 @@ struct GravelSimulation {
     released: bool,
 }
 
+/// Mixes a 32-bit seed into a non-zero 64-bit xorshift state.
+///
+/// The state must never be zero, or the generator latches at zero forever.
+const fn seed_state(seed: u32) -> u64 {
+    let spread = (seed as u64) << 32 | (seed as u64 ^ 0xa5a5_a5a5);
+    spread ^ 0x5eed_fade_cafe_beef
+}
+
 impl GravelSimulation {
-    fn new(aspect: f32) -> Self {
+    fn new(aspect: f32, seed: u32) -> Self {
         Self {
             rocks: Vec::with_capacity(MAX_ROCKS),
             heightfields: std::array::from_fn(|_| vec![1.0; PILE_BINS]),
             instances: Vec::with_capacity(MAX_ROCKS),
-            random_state: 0x5eed_fade_cafe_beef,
+            random_state: seed_state(seed),
             spawn_accumulator: 1.0,
             last_time: 0.0,
             aspect,
@@ -164,17 +177,23 @@ impl GravelSimulation {
         }
     }
 
-    fn reset(&mut self, aspect: f32) {
+    fn reset(&mut self, aspect: f32, seed: u32) {
         self.rocks.clear();
         for heightfield in &mut self.heightfields {
             heightfield.fill(1.0);
         }
         self.instances.clear();
-        self.random_state = 0x5eed_fade_cafe_beef;
+        self.random_state = seed_state(seed);
         self.spawn_accumulator = 1.0;
         self.last_time = 0.0;
         self.aspect = aspect;
         self.released = false;
+    }
+
+    /// Retargets a running simulation at a new aspect ratio without discarding
+    /// the pile the audience is already looking at.
+    fn retarget(&mut self, aspect: f32) {
+        self.aspect = aspect;
     }
 
     fn update(&mut self, time: f32, exit_progress: f32) -> &[GravelInstance] {
@@ -257,7 +276,9 @@ impl GravelSimulation {
         let (minimum_radius, maximum_radius) = layer.radius_range();
         let radius_y = minimum_radius + size_bias * size_bias * (maximum_radius - minimum_radius);
         let shape_aspect = 0.74 + self.next_f32() * 0.62;
-        let radius_x = radius_y * shape_aspect / self.aspect.max(0.1);
+        let radius_x = (radius_y * shape_aspect / self.aspect.max(0.1)).min(MAX_HORIZONTAL_RADIUS);
+        // Clamped above, so this span is always non-negative and the stone
+        // always spawns fully within the viewport.
         let x = radius_x + self.next_f32() * (1.0 - radius_x * 2.0);
         let color_index =
             usize::try_from(self.next_u32()).expect("u32 fits in usize") % GRAVEL_PALETTE.len();
@@ -311,6 +332,7 @@ impl GravelEffect {
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
         size: PhysicalSize<u32>,
+        seed: u32,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Gravel fall shader"),
@@ -356,23 +378,25 @@ impl GravelEffect {
         });
 
         Self {
-            simulation: GravelSimulation::new(screen_aspect(size)),
+            simulation: GravelSimulation::new(screen_aspect(size), seed),
             instance_buffer,
             pipeline,
             instance_count: 0,
         }
     }
 
-    pub fn reset(&mut self, size: PhysicalSize<u32>) {
-        self.simulation.reset(screen_aspect(size));
+    pub fn reset(&mut self, size: PhysicalSize<u32>, seed: u32) {
+        self.simulation.reset(screen_aspect(size), seed);
         self.instance_count = 0;
     }
 
+    /// Adopts a new aspect ratio for stones spawned from here on.
+    ///
+    /// Deliberately preserves the existing pile: a resize mid-flourish is
+    /// usually a one-off display change, and restarting the simulation would
+    /// make the pile vanish and rebuild in front of the audience.
     pub fn resize(&mut self, size: PhysicalSize<u32>) {
-        let aspect = screen_aspect(size);
-        if (aspect - self.simulation.aspect).abs() > 0.01 {
-            self.reset(size);
-        }
+        self.simulation.retarget(screen_aspect(size));
     }
 
     pub fn prepare(&mut self, queue: &wgpu::Queue, time: f32, exit_progress: f32) {
@@ -443,14 +467,17 @@ fn screen_aspect(size: PhysicalSize<u32>) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        BOULDER_COUNT, GRAVEL_PALETTE, GravelLayer, GravelSimulation, LARGE_COUNT, MAX_ROCKS,
-        MEDIUM_COUNT, SMALL_COUNT,
+        BOULDER_COUNT, GRAVEL_PALETTE, GravelLayer, GravelSimulation, LARGE_COUNT,
+        MAX_HORIZONTAL_RADIUS, MAX_ROCKS, MEDIUM_COUNT, SMALL_COUNT, seed_state,
     };
     use std::collections::HashSet;
 
+    /// Pinned so pile assertions stay reproducible; production seeds per run.
+    const TEST_SEED: u32 = 0x1234_5678;
+
     #[test]
     fn gravel_spawns_varied_rocks_and_builds_a_pile() {
-        let mut simulation = GravelSimulation::new(16.0 / 10.0);
+        let mut simulation = GravelSimulation::new(16.0 / 10.0, TEST_SEED);
         let mut time = 0.0;
         for _ in 0..900 {
             simulation.update(time, 0.0);
@@ -483,7 +510,7 @@ mod tests {
 
     #[test]
     fn gravel_uses_four_ordered_layers_without_tiny_filler() {
-        let mut simulation = GravelSimulation::new(16.0 / 9.0);
+        let mut simulation = GravelSimulation::new(16.0 / 9.0, TEST_SEED);
         let mut time = 0.0;
         for _ in 0..900 {
             simulation.update(time, 0.0);
@@ -546,7 +573,7 @@ mod tests {
 
     #[test]
     fn gravel_layers_build_independent_pile_surfaces() {
-        let mut simulation = GravelSimulation::new(16.0 / 9.0);
+        let mut simulation = GravelSimulation::new(16.0 / 9.0, TEST_SEED);
         let mut time = 0.0;
         while simulation.rocks.len() < BOULDER_COUNT {
             simulation.update(time, 0.0);
@@ -569,7 +596,7 @@ mod tests {
 
     #[test]
     fn settled_rocks_remain_onscreen_and_in_the_instance_set() {
-        let mut simulation = GravelSimulation::new(16.0 / 9.0);
+        let mut simulation = GravelSimulation::new(16.0 / 9.0, TEST_SEED);
         let mut time = 0.0;
         for _ in 0..1_200 {
             simulation.update(time, 0.0);
@@ -594,7 +621,7 @@ mod tests {
 
     #[test]
     fn removing_the_floor_releases_every_settled_rock() {
-        let mut simulation = GravelSimulation::new(16.0 / 9.0);
+        let mut simulation = GravelSimulation::new(16.0 / 9.0, TEST_SEED);
         let mut time = 0.0;
         for _ in 0..180 {
             simulation.update(time, 0.0);
@@ -610,10 +637,92 @@ mod tests {
     }
 
     #[test]
+    fn stones_stay_on_screen_on_portrait_and_extreme_aspects() {
+        // A rotated or portrait display divides radii by an aspect below one,
+        // which used to push stones wider than the viewport and invert the
+        // spawn span so they landed off-canvas entirely.
+        for aspect in [0.05, 0.4, 0.5625, 1.0, 16.0 / 9.0, 32.0 / 9.0] {
+            let mut simulation = GravelSimulation::new(aspect, TEST_SEED);
+            let mut time = 0.0;
+            for _ in 0..600 {
+                simulation.update(time, 0.0);
+                time += 1.0 / 60.0;
+            }
+
+            assert!(!simulation.rocks.is_empty(), "no rocks at aspect {aspect}");
+            for rock in &simulation.rocks {
+                assert!(
+                    rock.size[0] <= MAX_HORIZONTAL_RADIUS,
+                    "stone wider than the clamp at aspect {aspect}: {:?}",
+                    rock.size
+                );
+                assert!(
+                    rock.center[0] - rock.size[0] >= -0.001
+                        && rock.center[0] + rock.size[0] <= 1.001,
+                    "stone spawned off-canvas at aspect {aspect}: \
+                     center {:?} size {:?}",
+                    rock.center,
+                    rock.size
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn different_seeds_build_different_piles() {
+        let run = |seed| {
+            let mut simulation = GravelSimulation::new(16.0 / 9.0, seed);
+            let mut time = 0.0;
+            for _ in 0..600 {
+                simulation.update(time, 0.0);
+                time += 1.0 / 60.0;
+            }
+            simulation
+                .rocks
+                .iter()
+                .map(|rock| rock.center[0].to_bits())
+                .collect::<Vec<_>>()
+        };
+
+        assert_ne!(run(1), run(2));
+        assert_eq!(run(7), run(7), "a given seed must stay reproducible");
+    }
+
+    #[test]
+    fn seeding_never_produces_a_dead_generator() {
+        // A zero xorshift state latches at zero and every stone would stack in
+        // the same column forever.
+        for seed in [0, 1, u32::MAX, 0xa5a5_a5a5] {
+            assert_ne!(seed_state(seed), 0, "seed {seed} produced a zero state");
+        }
+    }
+
+    #[test]
+    fn resizing_mid_flourish_keeps_the_pile() {
+        let mut simulation = GravelSimulation::new(16.0 / 9.0, TEST_SEED);
+        let mut time = 0.0;
+        for _ in 0..300 {
+            simulation.update(time, 0.0);
+            time += 1.0 / 60.0;
+        }
+        let settled_before = simulation.rocks.iter().filter(|rock| rock.settled).count();
+        assert!(settled_before > 0);
+
+        simulation.retarget(4.0 / 3.0);
+
+        assert_eq!(
+            simulation.rocks.iter().filter(|rock| rock.settled).count(),
+            settled_before,
+            "retargeting the aspect must not discard the pile"
+        );
+        assert!((simulation.aspect - 4.0 / 3.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
     fn reset_clears_the_pile_and_reseeds_the_floor() {
-        let mut simulation = GravelSimulation::new(1.6);
+        let mut simulation = GravelSimulation::new(1.6, TEST_SEED);
         simulation.update(1.0, 0.0);
-        simulation.reset(2.0);
+        simulation.reset(2.0, TEST_SEED);
 
         assert!(simulation.rocks.is_empty());
         assert!(

@@ -1,10 +1,13 @@
+mod cli;
 mod doom_fire;
 mod gravel;
+mod hotkey;
 mod renderer;
 
 use std::{sync::Arc, time::Duration, time::Instant};
 
 use flourish::{Flourish, SignalResult, Timeline, TimelineUpdate};
+use hotkey::HotkeyBinding;
 use renderer::{FlourishRenderer, RenderOutcome};
 use tray_icon::{
     Icon, TrayIcon, TrayIconBuilder,
@@ -17,18 +20,25 @@ use winit::{
     window::{Window, WindowId, WindowLevel},
 };
 
+/// Focus loss within this window of a flourish starting is treated as the
+/// window manager settling rather than as the presenter dismissing it.
+const FOCUS_GRACE: Duration = Duration::from_millis(400);
+
 #[derive(Debug)]
 enum UserEvent {
     Menu(MenuId),
+    Hotkey,
 }
 
 struct App {
     started_at: Instant,
     timeline: Timeline,
     active_effect: Option<Flourish>,
+    last_effect: Flourish,
     window: Option<Arc<Window>>,
     renderer: Option<FlourishRenderer>,
     tray: Option<TrayIcon>,
+    hotkey: Option<HotkeyBinding>,
     effect_menu_ids: Vec<(MenuId, Flourish)>,
     quit_menu_id: Option<MenuId>,
     proxy: EventLoopProxy<UserEvent>,
@@ -39,11 +49,13 @@ impl App {
     fn new(proxy: EventLoopProxy<UserEvent>, autostart: Option<Flourish>) -> Self {
         Self {
             started_at: Instant::now(),
-            timeline: Timeline::new(Duration::ZERO),
+            timeline: Timeline::idle(),
             active_effect: None,
+            last_effect: autostart.unwrap_or(Flourish::Curtain),
             window: None,
             renderer: None,
             tray: None,
+            hotkey: None,
             effect_menu_ids: Vec::new(),
             quit_menu_id: None,
             proxy,
@@ -55,16 +67,17 @@ impl App {
         self.started_at.elapsed()
     }
 
-    fn start_or_signal(&mut self, effect: Flourish) {
+    /// Starts `effect`, replacing whatever is on screen.
+    ///
+    /// Choosing from the menu or pressing the hotkey is an explicit request for
+    /// that flourish. Treating it as a dismissal instead — as this once did —
+    /// silently discarded the presenter's actual choice.
+    fn start_effect(&mut self, effect: Flourish) {
         let now = self.now();
-        if self.timeline.is_active() {
-            self.handle_signal(now);
-            return;
-        }
-
-        self.timeline = Timeline::new(effect.exit_duration());
+        self.timeline = Timeline::new(effect.exit_duration(), effect.hold_limit());
         self.timeline.start(now);
         self.active_effect = Some(effect);
+        self.last_effect = effect;
         if let Some(renderer) = &mut self.renderer {
             renderer.start_effect(effect);
         }
@@ -73,6 +86,16 @@ impl App {
             window.set_visible(true);
             window.focus_window();
             window.request_redraw();
+        }
+    }
+
+    /// The hotkey both summons and dismisses: pressing it during a flourish
+    /// advances that flourish's exit rather than restarting it.
+    fn toggle_via_hotkey(&mut self) {
+        if self.timeline.is_active() {
+            self.handle_signal(self.now());
+        } else {
+            self.start_effect(self.last_effect);
         }
     }
 
@@ -89,6 +112,9 @@ impl App {
     }
 
     fn hide_overlay(&mut self) {
+        // Owns the whole teardown, including the timeline, so no caller can
+        // leave a hidden window paired with a still-running timeline.
+        self.timeline.complete();
         if let Some(window) = &self.window {
             window.set_visible(false);
             window.set_cursor_visible(true);
@@ -98,12 +124,17 @@ impl App {
 
     fn create_tray(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let menu = Menu::new();
-        for effect in Flourish::ALL {
+        for effect in Flourish::ALL.iter().copied() {
             let item = MenuItem::new(effect.label(), true, None);
             menu.append(&item)?;
             self.effect_menu_ids.push((item.id().clone(), effect));
         }
 
+        menu.append(&PredefinedMenuItem::separator())?;
+        // Advertise the global shortcut, which is the only way to reach a
+        // flourish without leaving a full-screen deck.
+        let hint = MenuItem::new(format!("Replay: {}", hotkey::DESCRIPTION), false, None);
+        menu.append(&hint)?;
         menu.append(&PredefinedMenuItem::separator())?;
         let quit = MenuItem::new("Quit Flourish", true, None);
         menu.append(&quit)?;
@@ -169,15 +200,25 @@ impl App {
         }
 
         let now = self.now();
-        if self.timeline.update(now) == TimelineUpdate::HideCompleted {
-            self.hide_overlay();
-            return;
+        match self.timeline.update(now) {
+            TimelineUpdate::Active => {}
+            TimelineUpdate::HoldExpired => {
+                eprintln!(
+                    "Flourish held the screen for its full {} seconds; \
+                     dismissing it automatically",
+                    self.active_effect
+                        .map_or(0, |effect| effect.hold_limit().as_secs())
+                );
+            }
+            TimelineUpdate::HideCompleted => {
+                self.hide_overlay();
+                return;
+            }
         }
 
         let time = self.timeline.effect_time(now);
         let exit_progress = self.timeline.exit_progress(now).unwrap_or(0.0);
         let Some(effect) = self.active_effect else {
-            self.timeline.complete();
             self.hide_overlay();
             return;
         };
@@ -186,15 +227,14 @@ impl App {
         };
 
         match renderer.render(effect, time, exit_progress) {
-            RenderOutcome::Presented | RenderOutcome::Skipped => {}
+            RenderOutcome::Presented | RenderOutcome::Skipped | RenderOutcome::Recovered => {}
             RenderOutcome::Reconfigure => {
                 if let Some(window) = &self.window {
                     renderer.resize(window.inner_size());
                 }
             }
             RenderOutcome::SurfaceLost => {
-                eprintln!("Flourish lost its window surface; hiding the overlay");
-                self.timeline.complete();
+                eprintln!("Flourish could not recover its window surface; hiding the overlay");
                 self.hide_overlay();
             }
             RenderOutcome::ValidationError => {
@@ -211,24 +251,36 @@ impl ApplicationHandler<UserEvent> for App {
         }
 
         if let Err(error) = self.create_window_and_renderer(event_loop) {
-            eprintln!("Could not initialize Flourish: {error}");
+            report_fatal("Flourish could not start", &error.to_string());
             event_loop.exit();
             return;
         }
 
         if let Err(error) = self.create_tray() {
-            eprintln!("Could not create the Flourish menu: {error}");
+            report_fatal("Flourish could not create its menu", &error.to_string());
             event_loop.exit();
             return;
         }
 
+        // A missing hotkey is a degraded experience, not a reason to refuse to
+        // run: the tray menu still works.
+        match HotkeyBinding::register(self.proxy.clone()) {
+            Ok(binding) => self.hotkey = Some(binding),
+            Err(error) => eprintln!(
+                "Flourish could not register the {} shortcut ({error}); \
+                 use the menu-bar icon instead",
+                hotkey::DESCRIPTION
+            ),
+        }
+
         if let Some(effect) = self.autostart {
-            self.start_or_signal(effect);
+            self.start_effect(effect);
         }
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
+            UserEvent::Hotkey => self.toggle_via_hotkey(),
             UserEvent::Menu(id) if self.quit_menu_id.as_ref() == Some(&id) => {
                 event_loop.exit();
             }
@@ -238,7 +290,7 @@ impl ApplicationHandler<UserEvent> for App {
                     .iter()
                     .find_map(|(menu_id, effect)| (menu_id == &id).then_some(*effect));
                 if let Some(effect) = selected {
-                    self.start_or_signal(effect);
+                    self.start_effect(effect);
                 }
             }
         }
@@ -271,10 +323,17 @@ impl ApplicationHandler<UserEvent> for App {
             {
                 self.handle_signal(self.now());
             }
-            WindowEvent::CloseRequested => {
-                self.timeline.complete();
-                self.hide_overlay();
+            // Losing focus means input is going somewhere else, so the overlay
+            // can no longer be dismissed by clicking or typing at it. Treat it
+            // as a dismissal rather than stranding the presenter behind a
+            // full-screen window they can no longer talk to.
+            WindowEvent::Focused(false) => {
+                let now = self.now();
+                if Duration::from_secs_f32(self.timeline.effect_time(now)) >= FOCUS_GRACE {
+                    self.handle_signal(now);
+                }
             }
+            WindowEvent::CloseRequested => self.hide_overlay(),
             _ => {}
         }
     }
@@ -414,16 +473,32 @@ fn distance_to_segment(point: [f32; 2], start: [f32; 2], end: [f32; 2]) -> f32 {
     ((point[0] - nearest[0]).powi(2) + (point[1] - nearest[1]).powi(2)).sqrt()
 }
 
+/// Reports a fatal startup problem somewhere the user will actually see it.
+///
+/// A menu-bar app launched from Finder has no terminal attached, so `eprintln!`
+/// alone means the app simply never appears and never says why.
+fn report_fatal(headline: &str, detail: &str) {
+    eprintln!("{headline}: {detail}");
+    rfd::MessageDialog::new()
+        .set_level(rfd::MessageLevel::Error)
+        .set_title(headline)
+        .set_description(detail)
+        .set_buttons(rfd::MessageButtons::Ok)
+        .show();
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let autostart = std::env::args().find_map(|argument| {
-        if argument == "--autostart" {
-            Some(Flourish::Curtain)
-        } else {
-            argument
-                .strip_prefix("--autostart=")
-                .and_then(Flourish::from_slug)
+    let autostart = match cli::parse(std::env::args().skip(1)) {
+        cli::Invocation::Run { autostart } => autostart,
+        cli::Invocation::PrintAndExit(message) => {
+            println!("{message}");
+            return Ok(());
         }
-    });
+        cli::Invocation::Fail(message) => {
+            eprintln!("flourish: {message}");
+            std::process::exit(2);
+        }
+    };
     let mut builder = EventLoop::<UserEvent>::with_user_event();
 
     #[cfg(target_os = "macos")]

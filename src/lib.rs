@@ -6,110 +6,111 @@ pub use timeline::{SignalResult, Timeline, TimelineUpdate};
 
 use std::time::Duration;
 
-/// The built-in presentation flourishes, in native-menu order.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Flourish {
-    Curtain,
-    ProjectorIris,
-    GeologicalStrata,
-    FrostedGlass,
-    CrtShutdown,
-    PondRipples,
-    Fire,
-    DoomFire,
-    GravelFall,
-    Blackout,
-    Kaleidoscope,
-    Mosaic,
+/// How long a flourish may hold the screen before it dismisses itself.
+///
+/// A flourish is a full-screen, always-on-top window that hides the cursor, so
+/// a presenter whose pointer is on another display can be left with no obvious
+/// way out. Every flourish therefore carries its own deadline; see
+/// [`Timeline`] for the enforcement.
+pub const DEFAULT_HOLD_LIMIT: Duration = Duration::from_secs(15);
+
+/// Declares the flourish catalog exactly once.
+///
+/// Every per-effect fact lives in the table below, so adding a variant without
+/// also giving it a slug, a label, a shader id, and an exit duration is a
+/// compile error rather than an effect that silently never appears in the menu.
+macro_rules! flourish_catalog {
+    ($(
+        $variant:ident {
+            slug: $slug:literal,
+            label: $label:literal,
+            shader_id: $shader_id:literal,
+            exit_ms: $exit_ms:literal,
+        }
+    ),+ $(,)?) => {
+        /// The built-in presentation flourishes, in native-menu order.
+        #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+        pub enum Flourish {
+            $($variant),+
+        }
+
+        impl Flourish {
+            /// Every flourish, in native-menu order.
+            pub const ALL: &'static [Self] = &[$(Self::$variant),+];
+
+            /// Stable command-line and preference identifier.
+            #[must_use]
+            pub const fn slug(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $slug),+
+                }
+            }
+
+            /// Human-readable menu text.
+            #[must_use]
+            pub const fn label(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $label),+
+                }
+            }
+
+            /// Stable shader selector. Values are explicit and never reused, so
+            /// recorded visuals and persisted preferences survive catalog
+            /// growth. The renderer dispatches on these exactly.
+            #[must_use]
+            pub const fn shader_id(self) -> u32 {
+                match self {
+                    $(Self::$variant => $shader_id),+
+                }
+            }
+
+            /// How long the flourish's graceful exit animation runs.
+            #[must_use]
+            pub const fn exit_duration(self) -> Duration {
+                match self {
+                    $(Self::$variant => Duration::from_millis($exit_ms)),+
+                }
+            }
+        }
+    };
+}
+
+flourish_catalog! {
+    Curtain          { slug: "curtain",           label: "Curtain",           shader_id: 0,  exit_ms: 1_800, },
+    ProjectorIris    { slug: "projector-iris",    label: "Projector Iris",    shader_id: 8,  exit_ms: 1_800, },
+    GeologicalStrata { slug: "geological-strata", label: "Geological Strata", shader_id: 9,  exit_ms: 1_900, },
+    FrostedGlass     { slug: "frosted-glass",     label: "Frosted Glass",     shader_id: 10, exit_ms: 1_700, },
+    CrtShutdown      { slug: "crt-shutdown",      label: "CRT Shutdown",      shader_id: 11, exit_ms: 1_300, },
+    PondRipples      { slug: "pond-ripples",      label: "Pond Ripples",      shader_id: 1,  exit_ms: 1_400, },
+    Fire             { slug: "fire",              label: "Fire",              shader_id: 2,  exit_ms: 1_600, },
+    DoomFire         { slug: "doom-fire",         label: "Doom Fire",         shader_id: 6,  exit_ms: 1_800, },
+    GravelFall       { slug: "gravel-fall",       label: "Gravel Fall",       shader_id: 7,  exit_ms: 1_800, },
+    Blackout         { slug: "blackout",          label: "Blackout",          shader_id: 3,  exit_ms: 1_200, },
+    Kaleidoscope     { slug: "kaleidoscope",      label: "Kaleidoscope",      shader_id: 4,  exit_ms: 1_500, },
+    Mosaic           { slug: "mosaic",            label: "Mosaic",            shader_id: 5,  exit_ms: 1_500, },
 }
 
 impl Flourish {
-    pub const ALL: [Self; 12] = [
-        Self::Curtain,
-        Self::ProjectorIris,
-        Self::GeologicalStrata,
-        Self::FrostedGlass,
-        Self::CrtShutdown,
-        Self::PondRipples,
-        Self::Fire,
-        Self::DoomFire,
-        Self::GravelFall,
-        Self::Blackout,
-        Self::Kaleidoscope,
-        Self::Mosaic,
-    ];
-
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Curtain => "Curtain",
-            Self::ProjectorIris => "Projector Iris",
-            Self::GeologicalStrata => "Geological Strata",
-            Self::FrostedGlass => "Frosted Glass",
-            Self::CrtShutdown => "CRT Shutdown",
-            Self::PondRipples => "Pond Ripples",
-            Self::Fire => "Fire",
-            Self::DoomFire => "Doom Fire",
-            Self::GravelFall => "Gravel Fall",
-            Self::Blackout => "Blackout",
-            Self::Kaleidoscope => "Kaleidoscope",
-            Self::Mosaic => "Mosaic",
-        }
-    }
-
-    /// Stable shader selector. Values are explicit to keep recorded visuals
-    /// and future persisted preferences compatible as the catalog grows.
-    #[must_use]
-    pub const fn shader_id(self) -> f32 {
-        match self {
-            Self::Curtain => 0.0,
-            Self::ProjectorIris => 8.0,
-            Self::GeologicalStrata => 9.0,
-            Self::FrostedGlass => 10.0,
-            Self::CrtShutdown => 11.0,
-            Self::PondRipples => 1.0,
-            Self::Fire => 2.0,
-            Self::DoomFire => 6.0,
-            Self::GravelFall => 7.0,
-            Self::Blackout => 3.0,
-            Self::Kaleidoscope => 4.0,
-            Self::Mosaic => 5.0,
-        }
-    }
-
-    #[must_use]
-    pub const fn exit_duration(self) -> Duration {
-        match self {
-            Self::Curtain | Self::DoomFire | Self::GravelFall | Self::ProjectorIris => {
-                Duration::from_millis(1_800)
-            }
-            Self::GeologicalStrata => Duration::from_millis(1_900),
-            Self::FrostedGlass => Duration::from_millis(1_700),
-            Self::CrtShutdown => Duration::from_millis(1_300),
-            Self::PondRipples => Duration::from_millis(1_400),
-            Self::Fire => Duration::from_millis(1_600),
-            Self::Blackout => Duration::from_millis(1_200),
-            Self::Kaleidoscope | Self::Mosaic => Duration::from_millis(1_500),
-        }
-    }
-
+    /// Resolves a command-line slug against the catalog.
     #[must_use]
     pub fn from_slug(slug: &str) -> Option<Self> {
-        match slug {
-            "curtain" => Some(Self::Curtain),
-            "projector-iris" => Some(Self::ProjectorIris),
-            "geological-strata" => Some(Self::GeologicalStrata),
-            "frosted-glass" => Some(Self::FrostedGlass),
-            "crt-shutdown" => Some(Self::CrtShutdown),
-            "pond-ripples" => Some(Self::PondRipples),
-            "fire" => Some(Self::Fire),
-            "doom-fire" => Some(Self::DoomFire),
-            "gravel-fall" => Some(Self::GravelFall),
-            "blackout" => Some(Self::Blackout),
-            "kaleidoscope" => Some(Self::Kaleidoscope),
-            "mosaic" => Some(Self::Mosaic),
-            _ => None,
-        }
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|flourish| flourish.slug() == slug)
+    }
+
+    /// How long this flourish may hold the screen before dismissing itself.
+    #[must_use]
+    pub const fn hold_limit(self) -> Duration {
+        DEFAULT_HOLD_LIMIT
+    }
+
+    /// Whether the flourish draws through its own dedicated pipeline instead of
+    /// the shared shader catalog.
+    #[must_use]
+    pub const fn has_dedicated_pipeline(self) -> bool {
+        matches!(self, Self::GravelFall)
     }
 }
 
@@ -121,22 +122,64 @@ mod catalog_tests {
     #[test]
     fn catalog_metadata_is_unique_and_presentation_safe() {
         let labels = Flourish::ALL
-            .map(Flourish::label)
-            .into_iter()
+            .iter()
+            .map(|effect| effect.label())
+            .collect::<HashSet<_>>();
+        let slugs = Flourish::ALL
+            .iter()
+            .map(|effect| effect.slug())
             .collect::<HashSet<_>>();
         let shader_ids = Flourish::ALL
-            .map(Flourish::shader_id)
-            .map(f32::to_bits)
-            .into_iter()
+            .iter()
+            .map(|effect| effect.shader_id())
             .collect::<HashSet<_>>();
 
         assert_eq!(labels.len(), Flourish::ALL.len());
+        assert_eq!(slugs.len(), Flourish::ALL.len());
         assert_eq!(shader_ids.len(), Flourish::ALL.len());
         assert!(
             Flourish::ALL
-                .into_iter()
+                .iter()
                 .all(|effect| !effect.exit_duration().is_zero())
         );
+    }
+
+    #[test]
+    fn every_flourish_holds_for_a_bounded_time() {
+        // A flourish that never yields the screen back can strand a presenter
+        // whose pointer is on another display.
+        assert!(
+            Flourish::ALL
+                .iter()
+                .all(|effect| !effect.hold_limit().is_zero())
+        );
+        assert!(
+            Flourish::ALL
+                .iter()
+                .all(|effect| effect.hold_limit() > effect.exit_duration())
+        );
+    }
+
+    #[test]
+    fn every_slug_round_trips() {
+        for effect in Flourish::ALL.iter().copied() {
+            assert_eq!(Flourish::from_slug(effect.slug()), Some(effect));
+        }
+        assert_eq!(Flourish::from_slug("unknown"), None);
+        assert_eq!(Flourish::from_slug(""), None);
+    }
+
+    #[test]
+    fn slugs_are_command_line_safe() {
+        for effect in Flourish::ALL.iter().copied() {
+            let slug = effect.slug();
+            assert!(!slug.is_empty());
+            assert!(
+                slug.bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte == b'-'),
+                "slug {slug:?} is not lowercase-and-dashes"
+            );
+        }
     }
 
     #[test]
@@ -149,11 +192,19 @@ mod catalog_tests {
             Flourish::from_slug("frosted-glass"),
             Some(Flourish::FrostedGlass)
         );
-        assert_eq!(
-            Flourish::from_slug("geological-strata"),
-            Some(Flourish::GeologicalStrata)
-        );
         assert_eq!(Flourish::from_slug("doom-fire"), Some(Flourish::DoomFire));
-        assert_eq!(Flourish::from_slug("unknown"), None);
+    }
+
+    #[test]
+    fn only_gravel_bypasses_the_shared_shader_catalog() {
+        // The shared fragment shader dispatches on shader_id; an effect that
+        // claims an id but renders elsewhere must be deliberate, not accidental.
+        let dedicated = Flourish::ALL
+            .iter()
+            .copied()
+            .filter(|effect| effect.has_dedicated_pipeline())
+            .collect::<Vec<_>>();
+
+        assert_eq!(dedicated, vec![Flourish::GravelFall]);
     }
 }

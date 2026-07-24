@@ -25,22 +25,36 @@ pub enum RendererError {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RenderOutcome {
+    /// The frame reached the compositor.
     Presented,
+    /// The surface is stale; the caller should resize and try again.
     Reconfigure,
-    SurfaceLost,
+    /// The surface was lost and has been reconfigured in place. This frame was
+    /// dropped, but the next one should succeed.
+    Recovered,
+    /// Nothing was drawn and nothing is wrong (occluded, timed out).
     Skipped,
+    /// The surface could not be recovered after repeated attempts.
+    SurfaceLost,
+    /// The GPU rejected the frame. Reported at most once per flourish.
     ValidationError,
 }
 
+/// Mirrors `Uniforms` in `shaders/flourishes.wgsl`. Field names, order, and
+/// types must stay in lockstep with that struct.
+///
+/// `effect_size` is live data, not tail padding: the Doom Fire shader uses it
+/// to index the heat buffer. The layout below is deliberately 32 bytes with no
+/// implicit gaps, which `bytemuck::Pod` enforces at compile time.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Uniforms {
     resolution: [f32; 2],
     time: f32,
     exit_progress: f32,
-    premultiply_alpha: f32,
-    effect_id: f32,
-    padding: [f32; 2],
+    effect_id: u32,
+    seed: u32,
+    effect_size: [f32; 2],
 }
 
 pub struct FlourishRenderer {
@@ -54,8 +68,14 @@ pub struct FlourishRenderer {
     doom_fire: DoomFireSimulation,
     gravel: GravelEffect,
     size: PhysicalSize<u32>,
-    premultiply_alpha: f32,
+    seed: u32,
+    reported_validation_error: bool,
+    consecutive_surface_losses: u32,
 }
+
+/// How many back-to-back surface losses to absorb before treating the surface
+/// as genuinely gone rather than momentarily disturbed by a display change.
+const MAX_SURFACE_RECOVERY_ATTEMPTS: u32 = 3;
 
 impl FlourishRenderer {
     pub async fn new(window: Arc<Window>) -> Result<Self, RendererError> {
@@ -110,18 +130,14 @@ impl FlourishRenderer {
         };
         surface.configure(&device, &config);
 
-        let premultiply_alpha = if alpha_mode == wgpu::CompositeAlphaMode::PreMultiplied {
-            1.0
-        } else {
-            0.0
-        };
+        let seed = fresh_seed();
         let doom_fire = DoomFireSimulation::new(&device);
-        let gravel = GravelEffect::new(&device, format, size);
+        let gravel = GravelEffect::new(&device, format, size, seed);
         let (pipeline, uniform_buffer, bind_group) = create_pipeline(
             &device,
             format,
             size_to_resolution(size),
-            premultiply_alpha,
+            seed,
             doom_fire.render_layout(),
         );
 
@@ -136,8 +152,23 @@ impl FlourishRenderer {
             doom_fire,
             gravel,
             size,
-            premultiply_alpha,
+            seed,
+            reported_validation_error: false,
+            consecutive_surface_losses: 0,
         })
+    }
+
+    /// A lost surface is usually a transient display change (mode switch, hot
+    /// plug, GPU handoff) rather than a dead device, so reconfigure and let the
+    /// next frame try again instead of abandoning the overlay outright.
+    fn recover_lost_surface(&mut self) -> RenderOutcome {
+        self.consecutive_surface_losses += 1;
+        if self.consecutive_surface_losses > MAX_SURFACE_RECOVERY_ATTEMPTS {
+            return RenderOutcome::SurfaceLost;
+        }
+
+        self.surface.configure(&self.device, &self.config);
+        RenderOutcome::Recovered
     }
 
     pub fn resize(&mut self, size: PhysicalSize<u32>) {
@@ -152,10 +183,14 @@ impl FlourishRenderer {
         self.gravel.resize(size);
     }
 
+    /// Re-seeds and rewinds any stateful simulation so a repeat performance of
+    /// the same flourish does not replay the previous one frame for frame.
     pub fn start_effect(&mut self, effect: Flourish) {
+        self.seed = fresh_seed();
+        self.reported_validation_error = false;
         match effect {
-            Flourish::DoomFire => self.doom_fire.reset(&self.queue),
-            Flourish::GravelFall => self.gravel.reset(self.size),
+            Flourish::DoomFire => self.doom_fire.reset(&self.queue, self.seed),
+            Flourish::GravelFall => self.gravel.reset(self.size, self.seed),
             _ => {}
         }
     }
@@ -165,9 +200,9 @@ impl FlourishRenderer {
             resolution: size_to_resolution(self.size),
             time,
             exit_progress,
-            premultiply_alpha: self.premultiply_alpha,
             effect_id: effect.shader_id(),
-            padding: DOOM_SIZE,
+            seed: self.seed,
+            effect_size: DOOM_SIZE,
         };
         self.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
@@ -176,14 +211,29 @@ impl FlourishRenderer {
         }
 
         let (frame, reconfigure_after_present) = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(frame) => (frame, false),
-            wgpu::CurrentSurfaceTexture::Suboptimal(frame) => (frame, true),
+            wgpu::CurrentSurfaceTexture::Success(frame) => {
+                self.consecutive_surface_losses = 0;
+                (frame, false)
+            }
+            wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
+                self.consecutive_surface_losses = 0;
+                (frame, true)
+            }
             wgpu::CurrentSurfaceTexture::Outdated => return RenderOutcome::Reconfigure,
-            wgpu::CurrentSurfaceTexture::Lost => return RenderOutcome::SurfaceLost,
+            wgpu::CurrentSurfaceTexture::Lost => return self.recover_lost_surface(),
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
                 return RenderOutcome::Skipped;
             }
-            wgpu::CurrentSurfaceTexture::Validation => return RenderOutcome::ValidationError,
+            wgpu::CurrentSurfaceTexture::Validation => {
+                // A persistent validation failure would otherwise log on every
+                // frame for the whole exit animation; once per flourish is
+                // enough to diagnose it.
+                if !self.reported_validation_error {
+                    self.reported_validation_error = true;
+                    return RenderOutcome::ValidationError;
+                }
+                return RenderOutcome::Skipped;
+            }
         };
         let view = frame
             .texture
@@ -236,16 +286,16 @@ fn create_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
     resolution: [f32; 2],
-    premultiply_alpha: f32,
+    seed: u32,
     doom_fire_layout: &wgpu::BindGroupLayout,
 ) -> (wgpu::RenderPipeline, wgpu::Buffer, wgpu::BindGroup) {
     let uniforms = Uniforms {
         resolution,
         time: 0.0,
         exit_progress: 0.0,
-        premultiply_alpha,
         effect_id: Flourish::Curtain.shader_id(),
-        padding: DOOM_SIZE,
+        seed,
+        effect_size: DOOM_SIZE,
     };
     let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Flourish uniforms"),
@@ -311,6 +361,38 @@ fn create_pipeline(
     (pipeline, uniform_buffer, bind_group)
 }
 
+/// A fresh seed for one performance of a flourish.
+///
+/// Procedural effects are otherwise bit-identical on every run, which makes a
+/// tool built to delight an audience feel canned the second time they see it.
+/// Falls back to a fixed value if the clock is unavailable; a repeated flourish
+/// is a far smaller problem than a panic mid-presentation.
+fn fresh_seed() -> u32 {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    // The wall clock alone is not enough: its granularity is coarser than the
+    // gap between two quick calls, so back-to-back seeds can land in the same
+    // tick and repeat. A counter guarantees they always differ, while the clock
+    // keeps separate launches from sharing a sequence.
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0x9e37_79b9, |elapsed| elapsed.subsec_nanos());
+    let counted = COUNTER
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_mul(0x9e37_79b9);
+    // Avalanche the low-entropy inputs so nearby launches do not produce
+    // visually similar output.
+    let mut mixed = nanos ^ counted ^ 0x2545_f491;
+    mixed ^= mixed >> 16;
+    mixed = mixed.wrapping_mul(0x7feb_352d);
+    mixed ^= mixed >> 15;
+    mixed = mixed.wrapping_mul(0x846c_a68b);
+    mixed ^ (mixed >> 16)
+}
+
 fn select_alpha_mode(modes: &[wgpu::CompositeAlphaMode]) -> Option<wgpu::CompositeAlphaMode> {
     modes
         .contains(&wgpu::CompositeAlphaMode::PreMultiplied)
@@ -331,7 +413,8 @@ fn size_to_resolution(size: PhysicalSize<u32>) -> [f32; 2] {
 
 #[cfg(test)]
 mod tests {
-    use super::select_alpha_mode;
+    use super::{Uniforms, fresh_seed, select_alpha_mode};
+    use flourish::Flourish;
     use wgpu::CompositeAlphaMode;
 
     #[test]
@@ -344,6 +427,47 @@ mod tests {
         assert_eq!(
             select_alpha_mode(&modes),
             Some(CompositeAlphaMode::PreMultiplied)
+        );
+    }
+
+    #[test]
+    fn uniform_layout_matches_the_shader_struct() {
+        // WGSL requires a uniform struct to be a multiple of 16 bytes, and
+        // every field here has a counterpart in shaders/flourishes.wgsl at the
+        // same offset. Drifting from that produces silently wrong visuals
+        // rather than a compile error, so pin it down.
+        assert_eq!(size_of::<Uniforms>(), 32);
+        assert_eq!(size_of::<Uniforms>() % 16, 0);
+        assert_eq!(std::mem::offset_of!(Uniforms, resolution), 0);
+        assert_eq!(std::mem::offset_of!(Uniforms, time), 8);
+        assert_eq!(std::mem::offset_of!(Uniforms, exit_progress), 12);
+        assert_eq!(std::mem::offset_of!(Uniforms, effect_id), 16);
+        assert_eq!(std::mem::offset_of!(Uniforms, seed), 20);
+        assert_eq!(std::mem::offset_of!(Uniforms, effect_size), 24);
+    }
+
+    #[test]
+    fn the_shader_catalog_covers_every_id_it_is_asked_to_draw() {
+        // flourishes.wgsl switches on these exact ids. Gravel is the one
+        // effect that never reaches that shader.
+        let catalog_ids = Flourish::ALL
+            .iter()
+            .copied()
+            .filter(|effect| !effect.has_dedicated_pipeline())
+            .map(Flourish::shader_id)
+            .collect::<Vec<_>>();
+
+        assert_eq!(catalog_ids.len(), Flourish::ALL.len() - 1);
+        assert!(!catalog_ids.contains(&Flourish::GravelFall.shader_id()));
+    }
+
+    #[test]
+    fn successive_seeds_differ() {
+        // Identical seeds would make every performance a rerun of the last.
+        let seeds = (0..8).map(|_| fresh_seed()).collect::<Vec<_>>();
+        assert!(
+            seeds.windows(2).any(|pair| pair[0] != pair[1]),
+            "seeds were all identical: {seeds:?}"
         );
     }
 }

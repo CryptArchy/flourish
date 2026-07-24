@@ -138,13 +138,16 @@ impl DoomFireSimulation {
         &self.render_bind_groups[self.current]
     }
 
-    pub fn reset(&mut self, queue: &wgpu::Queue) {
+    /// Rewinds the heat field. The frame counter starts from `seed` rather than
+    /// zero because it drives the propagation hash, so a fresh seed gives the
+    /// fire a different shape on every performance.
+    pub fn reset(&mut self, queue: &wgpu::Queue, seed: u32) {
         let cells = initial_cells();
         for buffer in &self.buffers {
             queue.write_buffer(buffer, 0, bytemuck::cast_slice(&cells));
         }
         self.current = 0;
-        self.frame = 0;
+        self.frame = seed;
         self.last_step_time = -STEP_SECONDS;
     }
 

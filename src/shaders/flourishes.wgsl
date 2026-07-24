@@ -1,17 +1,50 @@
+// Mirrors `Uniforms` in renderer.rs. Field order, types, and offsets must stay
+// in lockstep; a test there pins the Rust side's layout.
 struct Uniforms {
     resolution: vec2<f32>,
     time: f32,
     exit_progress: f32,
-    premultiply_alpha: f32,
-    effect_id: f32,
+    effect_id: u32,
+    seed: u32,
+    // Dimensions of the Doom Fire heat field. Live data, not padding.
     effect_size: vec2<f32>,
 };
+
+// Effect ids. These must match `Flourish::shader_id` in lib.rs.
+const EFFECT_CURTAIN: u32 = 0u;
+const EFFECT_POND_RIPPLES: u32 = 1u;
+const EFFECT_FIRE: u32 = 2u;
+const EFFECT_BLACKOUT: u32 = 3u;
+const EFFECT_KALEIDOSCOPE: u32 = 4u;
+const EFFECT_MOSAIC: u32 = 5u;
+const EFFECT_DOOM_FIRE: u32 = 6u;
+// Id 7 is Gravel Fall, which draws through its own pipeline and never reaches
+// this shader. It is deliberately absent from the switch below.
+const EFFECT_PROJECTOR_IRIS: u32 = 8u;
+const EFFECT_GEOLOGICAL_STRATA: u32 = 9u;
+const EFFECT_FROSTED_GLASS: u32 = 10u;
+const EFFECT_CRT_SHUTDOWN: u32 = 11u;
+
+// Must match `MAX_HEAT` in doom_fire.rs.
+const DOOM_MAX_HEAT: f32 = 36.0;
 
 @group(0) @binding(0)
 var<uniform> uniforms: Uniforms;
 
 @group(1) @binding(0)
 var<storage, read> doom_heat: array<u32>;
+
+// A per-performance offset into every procedural domain, so a flourish shown
+// twice in one talk is not the same picture twice.
+fn seed_offset() -> vec2<f32> {
+    let low = f32(uniforms.seed & 0xffffu) / 65536.0;
+    let high = f32((uniforms.seed >> 16u) & 0xffffu) / 65536.0;
+    return vec2<f32>(low, high) * 128.0;
+}
+
+fn seed_phase() -> f32 {
+    return f32(uniforms.seed & 0xffffu) / 65536.0 * 6.2831853;
+}
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -37,13 +70,18 @@ fn ease_in_out_cubic(value: f32) -> f32 {
     return 1.0 - shifted * shifted * shifted * 0.5;
 }
 
+// Both generators fold in the per-performance seed, so every hash-driven
+// detail (sparks, grain, frost cells, pebbles, tile colors) reshuffles between
+// runs while all timing and easing stay exactly as authored.
 fn hash21(point: vec2<f32>) -> f32 {
-    var p = fract(point * vec2<f32>(123.34, 456.21));
+    var p = fract((point + seed_offset()) * vec2<f32>(123.34, 456.21));
     p += dot(p, p + 45.32);
     return fract(p.x * p.y);
 }
 
 fn value_noise(point: vec2<f32>) -> f32 {
+    // Inherits the seed through its hash21 lattice samples; offsetting here as
+    // well would only re-randomize an already-randomized field.
     let cell = floor(point);
     let local = fract(point);
     let blend = local * local * (3.0 - 2.0 * local);
@@ -99,8 +137,11 @@ fn curtain(uv: vec2<f32>) -> vec4<f32> {
     let from_outer = select((1.0 - uv.x) / width, uv.x / width, is_left);
     let side = select(-1.0, 1.0, is_left);
 
-    let rustle = 0.13 * sin(uv.y * 8.0 + uniforms.time * 0.72)
-        + 0.05 * sin(uv.y * 19.0 - uniforms.time * 0.41);
+    // Curtain is woven entirely from sines, so it needs the seed applied
+    // directly; the hash-driven effects pick it up through hash21.
+    let drift = seed_phase();
+    let rustle = 0.13 * sin(uv.y * 8.0 + uniforms.time * 0.72 + drift)
+        + 0.05 * sin(uv.y * 19.0 - uniforms.time * 0.41 + drift * 1.7);
     let phase = from_outer * 18.0 * 3.14159265 + rustle + side * 0.3;
     let fold = 0.5 + 0.5 * cos(phase);
     let fine_fold = 0.5 + 0.5 * cos(phase * 2.0 + uv.y * 2.5);
@@ -165,7 +206,8 @@ fn pond_ripples(uv: vec2<f32>) -> vec4<f32> {
         var delta = uv - center;
         delta.x *= aspect;
         let distance_from_impact = length(delta);
-        let age = fract(uniforms.time * 0.135 + seed * 0.173);
+        // Stagger which impacts lead so the pond is not the same rain twice.
+        let age = fract(uniforms.time * 0.135 + seed * 0.173 + seed_phase());
         let radius = age * 0.48;
         let life = sin(age * 3.14159265);
         let width = mix(0.005, 0.016, age);
@@ -267,7 +309,7 @@ fn doom_fire(uv: vec2<f32>) -> vec4<f32> {
     );
     let coordinate = vec2<u32>(horizontal_offset + visible_coordinate.x, visible_coordinate.y);
     let index = coordinate.y * size.x + coordinate.x;
-    let heat = f32(doom_heat[index]) / 36.0;
+    let heat = f32(doom_heat[index]) / DOOM_MAX_HEAT;
     let exit = ease_in_out_cubic(clamp(uniforms.exit_progress, 0.0, 1.0));
     let alpha = smoothstep(0.0, 0.12, heat) * (1.0 - exit);
     return composite(doom_palette(heat), alpha);
@@ -288,7 +330,8 @@ fn kaleidoscope(uv: vec2<f32>) -> vec4<f32> {
     var point = uv - 0.5;
     point.x *= uniforms.resolution.x / uniforms.resolution.y;
     let radius = length(point);
-    let angle = atan2(point.y, point.x) + uniforms.time * 0.10;
+    // Start the mirror at a different rotation each time.
+    let angle = atan2(point.y, point.x) + uniforms.time * 0.10 + seed_phase();
     let sector = 3.14159265 * 2.0 / 12.0;
     let folded_angle = abs(fract(angle / sector + 0.5) - 0.5) * sector;
     let folded = vec2<f32>(cos(folded_angle), sin(folded_angle)) * radius;
@@ -641,35 +684,23 @@ fn geological_strata(uv: vec2<f32>) -> vec4<f32> {
 @fragment
 fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let uv = input.position.xy / uniforms.resolution;
-    if uniforms.effect_id < 0.5 {
-        return curtain(uv);
+    // An exact switch on an integer id. The previous float-threshold chain
+    // silently aliased unlisted ids onto whichever neighbour came next.
+    switch uniforms.effect_id {
+        case EFFECT_CURTAIN: { return curtain(uv); }
+        case EFFECT_POND_RIPPLES: { return pond_ripples(uv); }
+        case EFFECT_FIRE: { return fire(uv); }
+        case EFFECT_BLACKOUT: { return blackout(uv); }
+        case EFFECT_KALEIDOSCOPE: { return kaleidoscope(uv); }
+        case EFFECT_MOSAIC: { return mosaic(uv); }
+        case EFFECT_DOOM_FIRE: { return doom_fire(uv); }
+        case EFFECT_PROJECTOR_IRIS: { return projector_iris(uv); }
+        case EFFECT_GEOLOGICAL_STRATA: { return geological_strata(uv); }
+        case EFFECT_FROSTED_GLASS: { return frosted_glass(uv); }
+        case EFFECT_CRT_SHUTDOWN: { return crt_shutdown(uv); }
+        // An unknown id draws nothing rather than an arbitrary effect. A
+        // transparent overlay is a recoverable bug; the wrong flourish on
+        // stage is not.
+        default: { return vec4<f32>(0.0); }
     }
-    if uniforms.effect_id < 1.5 {
-        return pond_ripples(uv);
-    }
-    if uniforms.effect_id < 2.5 {
-        return fire(uv);
-    }
-    if uniforms.effect_id < 3.5 {
-        return blackout(uv);
-    }
-    if uniforms.effect_id < 4.5 {
-        return kaleidoscope(uv);
-    }
-    if uniforms.effect_id < 5.5 {
-        return mosaic(uv);
-    }
-    if uniforms.effect_id < 6.5 {
-        return doom_fire(uv);
-    }
-    if uniforms.effect_id < 8.5 {
-        return projector_iris(uv);
-    }
-    if uniforms.effect_id < 9.5 {
-        return geological_strata(uv);
-    }
-    if uniforms.effect_id < 10.5 {
-        return frosted_glass(uv);
-    }
-    return crt_shutdown(uv);
 }
