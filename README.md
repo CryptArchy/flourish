@@ -64,7 +64,7 @@ explicit follow-up work.
 
 ## Run locally
 
-You need Rust 1.87 or newer.
+You need Rust 1.88 or newer.
 
 ```sh
 cargo run

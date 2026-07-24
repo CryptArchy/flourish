@@ -62,8 +62,8 @@ jobs:
 
       # Pinned to the rust-version declared in Cargo.toml, so raising the floor
       # stays a deliberate edit rather than something a dependency does to us.
-      - name: Install Rust 1.87
-        uses: dtolnay/rust-toolchain@1.87
+      - name: Install Rust 1.88
+        uses: dtolnay/rust-toolchain@1.88
 
       - uses: Swatinem/rust-cache@v2
 
@@ -75,6 +75,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-audit
+      # Run directly rather than through an action that reports via the Checks
+      # API, so the ignore list and its rationale live in .cargo/audit.toml
+      # where they get reviewed alongside the code.
+      # Vulnerabilities fail the build. Unmaintained-crate notices are reported
+      # but do not, because the GTK3 bindings tray-icon needs on Linux are
+      # archived upstream with no drop-in replacement.
+      - name: Audit
+        run: cargo audit

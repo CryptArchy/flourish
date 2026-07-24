@@ -2,8 +2,11 @@
 name = "flourish"
 version = "0.1.0"
 edition = "2024"
-# Floor is set by wgpu 30, which declares 1.87.
-rust-version = "1.87"
+# wgpu 30 declares 1.87, but rfd's Linux xdg-portal backend needs `Default`
+# for raw pointers and declares no rust-version of its own, so the real floor
+# is higher than any dependency admits. The MSRV job in CI is what proves this
+# number; do not raise it without a build failure that demands it.
+rust-version = "1.88"
 description = "A lightweight runner for presentation flourishes"
 license = "MIT"
 readme = "README.md"

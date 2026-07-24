@@ -1,0 +1,21 @@
+# Advisories that do not apply to how Flourish uses the affected code.
+#
+# Each entry needs a reason. If an advisory can be resolved by upgrading, do
+# that instead of adding it here.
+
+[advisories]
+ignore = [
+    # RUSTSEC-2026-0194 / RUSTSEC-2026-0195 — quick-xml: quadratic attribute
+    # parsing and unbounded namespace allocation on untrusted XML.
+    #
+    # quick-xml reaches this tree only through wayland-scanner, a build-time
+    # proc-macro that generates Wayland protocol bindings from the protocol XML
+    # vendored inside the wayland crates. It never parses input from a network,
+    # a file the user supplies, or anything else an attacker controls, and it
+    # is not linked into the shipped binary at all. Both advisories describe
+    # denial of service against untrusted input, so neither is reachable.
+    #
+    # Resolvable only when winit's Wayland stack moves to quick-xml >= 0.41.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+]
