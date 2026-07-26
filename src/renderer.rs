@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
-use flourish::Flourish;
+use flourish::{Flourish, MotionPreference};
 use thiserror::Error;
 use wgpu::util::DeviceExt;
 use winit::{dpi::PhysicalSize, window::Window};
@@ -21,6 +21,46 @@ pub enum RendererError {
     NoSurfaceFormat,
     #[error("the window surface cannot composite transparent pixels")]
     NoTransparentAlphaMode,
+}
+
+/// Everything that changes from frame to frame within one flourish.
+///
+/// Grouped so the calm and full-motion paths differ only in how these three
+/// numbers are computed, not in how they are plumbed.
+#[derive(Clone, Copy, Debug)]
+pub struct Frame {
+    /// Seconds on the effect's own clock. Held at a settled value when motion
+    /// is reduced.
+    pub time: f32,
+    /// Graceful-exit progress driving the geometric reveal. Always zero when
+    /// motion is reduced, because that reveal *is* the motion.
+    pub exit_progress: f32,
+    /// Overall opacity, `0..=1`. Carries the whole entrance and exit when
+    /// motion is reduced, and stays at one otherwise.
+    pub presence: f32,
+}
+
+impl Frame {
+    /// The full-motion frame: the effect animates and is always fully present.
+    #[must_use]
+    pub const fn animated(time: f32, exit_progress: f32) -> Self {
+        Self {
+            time,
+            exit_progress,
+            presence: 1.0,
+        }
+    }
+
+    /// The calm frame: a settled composition at `presence` opacity, with no
+    /// geometric movement at all.
+    #[must_use]
+    pub const fn calm(presence: f32) -> Self {
+        Self {
+            time: flourish::motion::SETTLED_SECONDS,
+            exit_progress: 0.0,
+            presence,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -44,7 +84,7 @@ pub enum RenderOutcome {
 /// types must stay in lockstep with that struct.
 ///
 /// `effect_size` is live data, not tail padding: the Doom Fire shader uses it
-/// to index the heat buffer. The layout below is deliberately 32 bytes with no
+/// to index the heat buffer. The layout below is deliberately 48 bytes with no
 /// implicit gaps, which `bytemuck::Pod` enforces at compile time.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -55,6 +95,11 @@ struct Uniforms {
     effect_id: u32,
     seed: u32,
     effect_size: [f32; 2],
+    presence: f32,
+    /// Genuinely unused, unlike `effect_size`. WGSL requires a uniform struct
+    /// to be a multiple of 16 bytes, and `Pod` requires every byte be
+    /// initialized, so the tail is spelled out rather than left implicit.
+    _reserved: [f32; 3],
 }
 
 pub struct FlourishRenderer {
@@ -185,39 +230,52 @@ impl FlourishRenderer {
 
     /// Re-seeds and rewinds any stateful simulation so a repeat performance of
     /// the same flourish does not replay the previous one frame for frame.
-    pub fn start_effect(&mut self, effect: Flourish) {
+    ///
+    /// Doom Fire and Gravel Fall are simulations rather than functions of time.
+    /// The calm path holds the clock still, so they are stepped to a settled
+    /// state up front — otherwise reduced motion would fade in an empty screen
+    /// and a single lit row.
+    pub fn start_effect(&mut self, effect: Flourish, motion: MotionPreference) {
         self.seed = fresh_seed();
         self.reported_validation_error = false;
-        match effect {
-            Flourish::DoomFire => self.doom_fire.reset(&self.queue, self.seed),
-            Flourish::GravelFall => self.gravel.reset(self.size, self.seed),
+        match (effect, motion.is_reduced()) {
+            (Flourish::DoomFire, false) => self.doom_fire.reset(&self.queue, self.seed),
+            (Flourish::DoomFire, true) => {
+                self.doom_fire.warm_up(&self.device, &self.queue, self.seed);
+            }
+            (Flourish::GravelFall, false) => self.gravel.reset(self.size, self.seed),
+            (Flourish::GravelFall, true) => self.gravel.warm_up(self.size, self.seed),
             _ => {}
         }
     }
 
-    pub fn render(&mut self, effect: Flourish, time: f32, exit_progress: f32) -> RenderOutcome {
+    pub fn render(&mut self, effect: Flourish, frame: Frame) -> RenderOutcome {
         let uniforms = Uniforms {
             resolution: size_to_resolution(self.size),
-            time,
-            exit_progress,
+            time: frame.time,
+            exit_progress: frame.exit_progress,
             effect_id: effect.shader_id(),
             seed: self.seed,
             effect_size: DOOM_SIZE,
+            presence: frame.presence,
+            _reserved: [0.0; 3],
         };
         self.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
         if effect == Flourish::GravelFall {
-            self.gravel.prepare(&self.queue, time, exit_progress);
+            self.gravel
+                .prepare(&self.queue, frame.time, frame.exit_progress, frame.presence);
         }
 
-        let (frame, reconfigure_after_present) = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(frame) => {
+        let (surface_texture, reconfigure_after_present) = match self.surface.get_current_texture()
+        {
+            wgpu::CurrentSurfaceTexture::Success(texture) => {
                 self.consecutive_surface_losses = 0;
-                (frame, false)
+                (texture, false)
             }
-            wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
+            wgpu::CurrentSurfaceTexture::Suboptimal(texture) => {
                 self.consecutive_surface_losses = 0;
-                (frame, true)
+                (texture, true)
             }
             wgpu::CurrentSurfaceTexture::Outdated => return RenderOutcome::Reconfigure,
             wgpu::CurrentSurfaceTexture::Lost => return self.recover_lost_surface(),
@@ -235,7 +293,7 @@ impl FlourishRenderer {
                 return RenderOutcome::Skipped;
             }
         };
-        let view = frame
+        let view = surface_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = self
@@ -244,8 +302,10 @@ impl FlourishRenderer {
                 label: Some("Flourish frame encoder"),
             });
         if effect == Flourish::DoomFire {
+            // A warmed-up field has its step gate held shut, so this is a no-op
+            // on the calm path and the fire stays exactly as settled.
             self.doom_fire
-                .encode_step(&mut encoder, &self.queue, time, exit_progress);
+                .encode_step(&mut encoder, &self.queue, frame.time, frame.exit_progress);
         }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -274,7 +334,7 @@ impl FlourishRenderer {
             }
         }
         self.queue.submit(Some(encoder.finish()));
-        self.queue.present(frame);
+        self.queue.present(surface_texture);
         if reconfigure_after_present {
             self.surface.configure(&self.device, &self.config);
         }
@@ -296,6 +356,8 @@ fn create_pipeline(
         effect_id: Flourish::Curtain.shader_id(),
         seed,
         effect_size: DOOM_SIZE,
+        presence: 1.0,
+        _reserved: [0.0; 3],
     };
     let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Flourish uniforms"),
@@ -413,7 +475,7 @@ fn size_to_resolution(size: PhysicalSize<u32>) -> [f32; 2] {
 
 #[cfg(test)]
 mod tests {
-    use super::{Uniforms, fresh_seed, select_alpha_mode};
+    use super::{Frame, Uniforms, fresh_seed, select_alpha_mode};
     use flourish::Flourish;
     use wgpu::CompositeAlphaMode;
 
@@ -436,7 +498,7 @@ mod tests {
         // every field here has a counterpart in shaders/flourishes.wgsl at the
         // same offset. Drifting from that produces silently wrong visuals
         // rather than a compile error, so pin it down.
-        assert_eq!(size_of::<Uniforms>(), 32);
+        assert_eq!(size_of::<Uniforms>(), 48);
         assert_eq!(size_of::<Uniforms>() % 16, 0);
         assert_eq!(std::mem::offset_of!(Uniforms, resolution), 0);
         assert_eq!(std::mem::offset_of!(Uniforms, time), 8);
@@ -444,6 +506,26 @@ mod tests {
         assert_eq!(std::mem::offset_of!(Uniforms, effect_id), 16);
         assert_eq!(std::mem::offset_of!(Uniforms, seed), 20);
         assert_eq!(std::mem::offset_of!(Uniforms, effect_size), 24);
+        assert_eq!(std::mem::offset_of!(Uniforms, presence), 32);
+    }
+
+    #[test]
+    fn a_calm_frame_removes_every_source_of_movement() {
+        let calm = Frame::calm(0.5);
+        // Both of the things that move are pinned: the clock does not advance,
+        // and the geometric exit never begins. Only opacity is left.
+        assert!(calm.exit_progress.abs() < f32::EPSILON);
+        assert!((calm.time - flourish::motion::SETTLED_SECONDS).abs() < f32::EPSILON);
+        assert!((calm.presence - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn an_animated_frame_is_always_fully_present() {
+        // Presence is the calm path's mechanism; full motion must never dim.
+        let animated = Frame::animated(2.0, 0.75);
+        assert!((animated.presence - 1.0).abs() < f32::EPSILON);
+        assert!((animated.exit_progress - 0.75).abs() < f32::EPSILON);
+        assert!((animated.time - 2.0).abs() < f32::EPSILON);
     }
 
     #[test]

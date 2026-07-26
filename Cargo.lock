@@ -537,6 +537,7 @@ dependencies = [
  "bytemuck",
  "global-hotkey",
  "naga",
+ "objc2-app-kit 0.3.2",
  "png",
  "pollster",
  "rfd",

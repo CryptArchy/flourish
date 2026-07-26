@@ -43,6 +43,30 @@ is deliberately hard to get stuck behind one:
   15 seconds, and losing window focus also starts its exit — a presenter whose
   pointer is on another display is never stranded.
 
+## Reduced motion
+
+Flourish follows the system's reduce-motion setting. When it is on, every
+flourish still appears — same velvet, same frost, same strata — but holds a
+settled composition and cross-fades in and out instead of sweeping, spiralling,
+or collapsing.
+
+This is not only a personal preference setting. A flourish fills a projector
+screen in front of a room, and the CRT's static, the fire's flicker, and the
+kaleidoscope's rotation are the kind of rapid, high-contrast movement that
+provokes migraine and, at worst, photosensitive seizures. The person affected is
+usually in the audience and has no way to ask you to stop.
+
+Because you may only learn that once you are already on stage, **Reduce Motion
+is a menu item** as well as a setting, and can be toggled mid-talk.
+
+```sh
+cargo run -- --reduce-motion
+```
+
+`--full-motion` forces animation on even where the system asks otherwise.
+Detection is automatic on macOS and on GNOME; elsewhere use the flag or the
+menu.
+
 ## Current status
 
 This repository contains an expanded macOS vertical slice:
@@ -52,6 +76,8 @@ This repository contains an expanded macOS vertical slice:
 - Global shortcut for summoning and dismissing from inside a full-screen deck
 - Celebratory party-popper template icon on macOS, with color on other trays
 - Transparent full-screen procedural shader catalog, seeded per performance
+- Reduced-motion path that holds each flourish still and cross-fades, following
+  the system setting and toggleable from the menu
 - Graceful first-signal exit, second-signal hard kill, and a self-dismiss
   ceiling
 - Unit-tested effect lifecycle, and WGSL validated at build time

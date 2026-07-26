@@ -194,6 +194,59 @@ impl DoomFireSimulation {
     }
 }
 
+/// Steps needed for heat to climb from the seed row to the top of the field
+/// and reach a steady state.
+const WARM_UP_STEPS: u32 = 160;
+
+impl DoomFireSimulation {
+    /// Runs the propagation forward without drawing, so a frozen clock still
+    /// shows a developed fire rather than a single lit row.
+    ///
+    /// Submits its own command buffer: the calm path needs the field already
+    /// settled before the first frame is encoded.
+    pub fn warm_up(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, seed: u32) {
+        self.reset(queue, seed);
+
+        for _ in 0..WARM_UP_STEPS {
+            self.frame = self.frame.wrapping_add(1);
+            queue.write_buffer(
+                &self.compute_uniforms,
+                0,
+                bytemuck::bytes_of(&ComputeUniforms {
+                    width: WIDTH,
+                    height: HEIGHT,
+                    frame: self.frame,
+                    source_strength: MAX_HEAT,
+                }),
+            );
+
+            // Submitted per step rather than batched into one command buffer.
+            // Queue writes all land before any of the work they were meant to
+            // parameterize, so a batched warm-up would run every step against
+            // the final frame counter -- the propagation hash would be constant
+            // and the fire would climb in fixed streaks instead of flickering.
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Doom fire warm-up step"),
+            });
+            {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("Doom fire warm-up propagation"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&self.compute_pipeline);
+                pass.set_bind_group(0, &self.compute_bind_groups[self.current], &[]);
+                pass.dispatch_workgroups((WIDTH * HEIGHT).div_ceil(WORKGROUP_SIZE), 1, 1);
+            }
+            queue.submit(Some(encoder.finish()));
+            self.current = 1 - self.current;
+        }
+
+        // The calm path holds the clock still, so leave the step gate satisfied
+        // rather than letting the first frame advance the field again.
+        self.last_step_time = f32::MAX;
+    }
+}
+
 fn storage_entry(
     binding: u32,
     read_only: bool,

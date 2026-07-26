@@ -56,5 +56,9 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let edge = smoothstep(0.58, 1.02, length(input.local));
     let grain = hash21(floor(input.local * 17.0) + input.seed) - 0.5;
     let shade = facing - edge * 0.16 + grain * 0.055;
-    return vec4<f32>(input.color.rgb * shade, 1.0);
+    // Instance alpha carries overall presence, which is how the calm path
+    // cross-fades a pipeline that has no uniforms of its own. Premultiplied,
+    // to match the shared catalog and the surface's composite mode.
+    let alpha = clamp(input.color.a, 0.0, 1.0);
+    return vec4<f32>(input.color.rgb * shade * alpha, alpha);
 }

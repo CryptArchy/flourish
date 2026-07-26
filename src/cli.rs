@@ -3,13 +3,17 @@
 //! Deliberately hand-rolled: the surface is three flags, and a dependency-free
 //! parser keeps a presentation tool's startup path trivial to audit.
 
-use flourish::Flourish;
+use flourish::{Flourish, MotionPreference};
 
 /// What the command line asked the program to do.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Invocation {
     /// Run normally, optionally playing a flourish immediately.
-    Run { autostart: Option<Flourish> },
+    Run {
+        autostart: Option<Flourish>,
+        /// `None` means the command line did not say, so ask the system.
+        motion: Option<MotionPreference>,
+    },
     /// Print text and exit successfully.
     PrintAndExit(String),
     /// Print an error and exit unsuccessfully.
@@ -26,8 +30,15 @@ OPTIONS:
     --autostart[=<FLOURISH>]  Play a flourish immediately at launch.
                               Defaults to the signature Curtain.
     --list                    List every flourish and its slug.
+    --reduce-motion           Hold each flourish still and cross-fade instead
+                              of animating. Overrides the system setting.
+    --full-motion             Animate even if the system asks for reduced
+                              motion.
     -h, --help                Print this help.
     -V, --version             Print version information.
+
+Without either motion flag, Flourish follows the system's reduce-motion
+setting, and the menu can toggle it at any time.
 
 Once running, Flourish lives in the menu bar. Choose an effect from its menu,
 then click or press any key to begin its exit; signal again during the exit to
@@ -40,10 +51,13 @@ where
     S: AsRef<str>,
 {
     let mut autostart = None;
+    let mut motion = None;
 
     for argument in arguments {
         let argument = argument.as_ref();
         match argument {
+            "--reduce-motion" => motion = Some(MotionPreference::Reduced),
+            "--full-motion" => motion = Some(MotionPreference::Full),
             "-h" | "--help" => return Invocation::PrintAndExit(USAGE.to_owned()),
             "-V" | "--version" => {
                 return Invocation::PrintAndExit(format!(
@@ -74,7 +88,7 @@ where
         }
     }
 
-    Invocation::Run { autostart }
+    Invocation::Run { autostart, motion }
 }
 
 fn catalog_listing() -> String {
@@ -102,7 +116,10 @@ mod tests {
     fn no_arguments_runs_without_autostart() {
         assert_eq!(
             parse(Vec::<String>::new()),
-            Invocation::Run { autostart: None }
+            Invocation::Run {
+                autostart: None,
+                motion: None
+            }
         );
     }
 
@@ -111,7 +128,8 @@ mod tests {
         assert_eq!(
             parse(["--autostart"]),
             Invocation::Run {
-                autostart: Some(Flourish::Curtain)
+                autostart: Some(Flourish::Curtain),
+                motion: None
             }
         );
     }
@@ -122,7 +140,8 @@ mod tests {
             assert_eq!(
                 parse([format!("--autostart={}", effect.slug())]),
                 Invocation::Run {
-                    autostart: Some(effect)
+                    autostart: Some(effect),
+                    motion: None
                 },
                 "slug {} did not round-trip through the CLI",
                 effect.slug()

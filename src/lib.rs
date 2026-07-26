@@ -1,8 +1,10 @@
 //! Shared, renderer-independent Flourish behavior.
 
 pub mod icon;
+pub mod motion;
 mod timeline;
 
+pub use motion::MotionPreference;
 pub use timeline::{SignalResult, Timeline, TimelineUpdate};
 
 use std::time::Duration;

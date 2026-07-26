@@ -21,6 +21,10 @@ const RELEASE_GRAVITY: f32 = 2.35;
 // would otherwise produce stones wider than the screen and a spawn span that
 // runs backwards.
 const MAX_HORIZONTAL_RADIUS: f32 = 0.45;
+// Long enough for every stone to spawn and come to rest; the tests show the
+// pile fully settled well before this.
+const WARM_UP_SECONDS: f32 = 24.0;
+const WARM_UP_STEP: f32 = 1.0 / 60.0;
 
 const GRAVEL_PALETTE: [[f32; 4]; 6] = [
     [0.48, 0.41, 0.31, 1.0],
@@ -132,11 +136,15 @@ struct Rock {
 }
 
 impl Rock {
-    fn instance(self) -> GravelInstance {
+    /// `presence` rides in the instance's alpha channel; the gravel pipeline
+    /// has no uniforms of its own to carry it.
+    fn instance(self, presence: f32) -> GravelInstance {
+        let mut color = self.color;
+        color[3] = presence.clamp(0.0, 1.0);
         GravelInstance {
             center: self.center,
             size: self.size,
-            color: self.color,
+            color,
             rotation: self.rotation,
             seed: self.seed,
             padding: [0.0; 2],
@@ -196,7 +204,17 @@ impl GravelSimulation {
         self.aspect = aspect;
     }
 
-    fn update(&mut self, time: f32, exit_progress: f32) -> &[GravelInstance] {
+    /// Advances the pile to rest, as if the flourish had been running for
+    /// [`WARM_UP_SECONDS`], so a frozen clock still has a full pile to show.
+    fn warm_up(&mut self) {
+        let mut time = 0.0;
+        while time < WARM_UP_SECONDS {
+            time += WARM_UP_STEP;
+            self.update(time, 0.0, 1.0);
+        }
+    }
+
+    fn update(&mut self, time: f32, exit_progress: f32, presence: f32) -> &[GravelInstance] {
         let delta_time = (time - self.last_time).clamp(0.0, 0.05);
         self.last_time = time;
 
@@ -265,8 +283,7 @@ impl GravelSimulation {
             self.rocks
                 .iter()
                 .filter(|rock| rock.center[1] - rock.size[1] < 1.12)
-                .copied()
-                .map(Rock::instance),
+                .map(|rock| rock.instance(presence)),
         );
         &self.instances
     }
@@ -399,12 +416,21 @@ impl GravelEffect {
         self.simulation.retarget(screen_aspect(size));
     }
 
-    pub fn prepare(&mut self, queue: &wgpu::Queue, time: f32, exit_progress: f32) {
-        let instances = self.simulation.update(time, exit_progress);
+    pub fn prepare(&mut self, queue: &wgpu::Queue, time: f32, exit_progress: f32, presence: f32) {
+        let instances = self.simulation.update(time, exit_progress, presence);
         self.instance_count = u32::try_from(instances.len()).expect("rock count fits in u32");
         if !instances.is_empty() {
             queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(instances));
         }
+    }
+
+    /// Runs the simulation forward to a settled pile without drawing anything.
+    ///
+    /// The calm path holds a frozen clock, and gravel is a simulation rather
+    /// than a function of time, so without this it would hold an empty screen.
+    pub fn warm_up(&mut self, size: PhysicalSize<u32>, seed: u32) {
+        self.reset(size, seed);
+        self.simulation.warm_up();
     }
 
     pub fn render<'pass>(&'pass self, pass: &mut wgpu::RenderPass<'pass>) {
@@ -468,7 +494,7 @@ fn screen_aspect(size: PhysicalSize<u32>) -> f32 {
 mod tests {
     use super::{
         BOULDER_COUNT, GRAVEL_PALETTE, GravelLayer, GravelSimulation, LARGE_COUNT,
-        MAX_HORIZONTAL_RADIUS, MAX_ROCKS, MEDIUM_COUNT, SMALL_COUNT, seed_state,
+        MAX_HORIZONTAL_RADIUS, MAX_ROCKS, MEDIUM_COUNT, SMALL_COUNT, WARM_UP_SECONDS, seed_state,
     };
     use std::collections::HashSet;
 
@@ -480,7 +506,7 @@ mod tests {
         let mut simulation = GravelSimulation::new(16.0 / 10.0, TEST_SEED);
         let mut time = 0.0;
         for _ in 0..900 {
-            simulation.update(time, 0.0);
+            simulation.update(time, 0.0, 1.0);
             time += 1.0 / 60.0;
         }
 
@@ -513,7 +539,7 @@ mod tests {
         let mut simulation = GravelSimulation::new(16.0 / 9.0, TEST_SEED);
         let mut time = 0.0;
         for _ in 0..900 {
-            simulation.update(time, 0.0);
+            simulation.update(time, 0.0, 1.0);
             time += 1.0 / 60.0;
         }
 
@@ -576,11 +602,11 @@ mod tests {
         let mut simulation = GravelSimulation::new(16.0 / 9.0, TEST_SEED);
         let mut time = 0.0;
         while simulation.rocks.len() < BOULDER_COUNT {
-            simulation.update(time, 0.0);
+            simulation.update(time, 0.0, 1.0);
             time += 1.0 / 60.0;
         }
         for _ in 0..180 {
-            simulation.update(time, 0.0);
+            simulation.update(time, 0.0, 1.0);
             time += 1.0 / 60.0;
         }
 
@@ -599,7 +625,7 @@ mod tests {
         let mut simulation = GravelSimulation::new(16.0 / 9.0, TEST_SEED);
         let mut time = 0.0;
         for _ in 0..1_200 {
-            simulation.update(time, 0.0);
+            simulation.update(time, 0.0, 1.0);
             time += 1.0 / 60.0;
         }
 
@@ -624,12 +650,12 @@ mod tests {
         let mut simulation = GravelSimulation::new(16.0 / 9.0, TEST_SEED);
         let mut time = 0.0;
         for _ in 0..180 {
-            simulation.update(time, 0.0);
+            simulation.update(time, 0.0, 1.0);
             time += 1.0 / 60.0;
         }
         assert!(simulation.rocks.iter().any(|rock| rock.settled));
 
-        simulation.update(3.1, 0.1);
+        simulation.update(3.1, 0.1, 1.0);
 
         assert!(simulation.released);
         assert!(simulation.rocks.iter().all(|rock| !rock.settled));
@@ -645,7 +671,7 @@ mod tests {
             let mut simulation = GravelSimulation::new(aspect, TEST_SEED);
             let mut time = 0.0;
             for _ in 0..600 {
-                simulation.update(time, 0.0);
+                simulation.update(time, 0.0, 1.0);
                 time += 1.0 / 60.0;
             }
 
@@ -674,7 +700,7 @@ mod tests {
             let mut simulation = GravelSimulation::new(16.0 / 9.0, seed);
             let mut time = 0.0;
             for _ in 0..600 {
-                simulation.update(time, 0.0);
+                simulation.update(time, 0.0, 1.0);
                 time += 1.0 / 60.0;
             }
             simulation
@@ -702,7 +728,7 @@ mod tests {
         let mut simulation = GravelSimulation::new(16.0 / 9.0, TEST_SEED);
         let mut time = 0.0;
         for _ in 0..300 {
-            simulation.update(time, 0.0);
+            simulation.update(time, 0.0, 1.0);
             time += 1.0 / 60.0;
         }
         let settled_before = simulation.rocks.iter().filter(|rock| rock.settled).count();
@@ -719,9 +745,64 @@ mod tests {
     }
 
     #[test]
+    fn warming_up_produces_a_settled_pile_from_a_standing_start() {
+        // The calm path holds the clock still, so whatever warm_up leaves
+        // behind is the entire picture the audience sees.
+        let mut simulation = GravelSimulation::new(16.0 / 9.0, TEST_SEED);
+        simulation.warm_up();
+
+        assert_eq!(simulation.rocks.len(), MAX_ROCKS);
+        assert!(
+            simulation.rocks.iter().all(|rock| rock.settled),
+            "a calm Gravel Fall would show stones frozen mid-air"
+        );
+        assert!(
+            simulation
+                .heightfields
+                .iter()
+                .flatten()
+                .any(|height| *height < 0.99)
+        );
+    }
+
+    #[test]
+    fn presence_reaches_the_instance_alpha() {
+        // Gravel draws through its own pipeline with no uniforms, so alpha is
+        // the only channel that can carry the cross-fade.
+        let mut simulation = GravelSimulation::new(16.0 / 9.0, TEST_SEED);
+        simulation.warm_up();
+
+        let instances = simulation.update(WARM_UP_SECONDS, 0.0, 0.25);
+        assert!(!instances.is_empty());
+        assert!(
+            instances
+                .iter()
+                .all(|instance| (instance.color[3] - 0.25).abs() < f32::EPSILON),
+            "presence did not reach every instance's alpha"
+        );
+    }
+
+    #[test]
+    fn full_motion_leaves_stones_fully_opaque() {
+        let mut simulation = GravelSimulation::new(16.0 / 9.0, TEST_SEED);
+        let mut time = 0.0;
+        for _ in 0..300 {
+            simulation.update(time, 0.0, 1.0);
+            time += 1.0 / 60.0;
+        }
+
+        assert!(
+            simulation
+                .instances
+                .iter()
+                .all(|instance| (instance.color[3] - 1.0).abs() < f32::EPSILON)
+        );
+    }
+
+    #[test]
     fn reset_clears_the_pile_and_reseeds_the_floor() {
         let mut simulation = GravelSimulation::new(1.6, TEST_SEED);
-        simulation.update(1.0, 0.0);
+        simulation.update(1.0, 0.0, 1.0);
         simulation.reset(2.0, TEST_SEED);
 
         assert!(simulation.rocks.is_empty());

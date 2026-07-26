@@ -37,6 +37,15 @@ unsafe_code = "forbid"
 all = "warn"
 pedantic = "warn"
 
+# Reading the system reduce-motion setting. Both NSWorkspace calls Flourish
+# needs are safe bindings, so this does not cost the crate its forbid(unsafe).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSAccessibility",
+    "NSWorkspace",
+] }
+
 [dev-dependencies]
 naga = { version = "30", features = ["wgsl-in"] }
 png = "0.18"

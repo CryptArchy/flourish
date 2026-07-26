@@ -8,6 +8,8 @@ struct Uniforms {
     seed: u32,
     // Dimensions of the Doom Fire heat field. Live data, not padding.
     effect_size: vec2<f32>,
+    // Overall opacity. Carries the entrance and exit when motion is reduced.
+    presence: f32,
 };
 
 // Effect ids. These must match `Flourish::shader_id` in lib.rs.
@@ -94,8 +96,10 @@ fn value_noise(point: vec2<f32>) -> f32 {
     return mix(low, high, blend.y);
 }
 
+// Every effect ends here, which is what lets one multiply give the whole
+// catalog a cross-fade when motion is reduced.
 fn composite(color: vec3<f32>, alpha: f32) -> vec4<f32> {
-    let safe_alpha = clamp(alpha, 0.0, 1.0);
+    let safe_alpha = clamp(alpha, 0.0, 1.0) * clamp(uniforms.presence, 0.0, 1.0);
     // Premultiplication is intentional even on the post-multiplied fallback:
     // no transparent frame may retain bright RGB for the window compositor.
     return vec4<f32>(color * safe_alpha, safe_alpha);

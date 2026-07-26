@@ -6,9 +6,9 @@ mod renderer;
 
 use std::{sync::Arc, time::Duration, time::Instant};
 
-use flourish::{Flourish, SignalResult, Timeline, TimelineUpdate};
+use flourish::{Flourish, MotionPreference, SignalResult, Timeline, TimelineUpdate, motion};
 use hotkey::HotkeyBinding;
-use renderer::{FlourishRenderer, RenderOutcome};
+use renderer::{FlourishRenderer, Frame, RenderOutcome};
 use tray_icon::{
     Icon, TrayIcon, TrayIconBuilder,
     menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem},
@@ -41,6 +41,9 @@ struct App {
     hotkey: Option<HotkeyBinding>,
     effect_menu_ids: Vec<(MenuId, Flourish)>,
     quit_menu_id: Option<MenuId>,
+    motion: MotionPreference,
+    motion_menu_id: Option<MenuId>,
+    motion_menu_item: Option<MenuItem>,
     proxy: EventLoopProxy<UserEvent>,
     autostart: Option<Flourish>,
     /// Set when startup fails; reported by `main` after the loop unwinds.
@@ -48,7 +51,11 @@ struct App {
 }
 
 impl App {
-    fn new(proxy: EventLoopProxy<UserEvent>, autostart: Option<Flourish>) -> Self {
+    fn new(
+        proxy: EventLoopProxy<UserEvent>,
+        autostart: Option<Flourish>,
+        motion: MotionPreference,
+    ) -> Self {
         Self {
             started_at: Instant::now(),
             timeline: Timeline::idle(),
@@ -60,6 +67,9 @@ impl App {
             hotkey: None,
             effect_menu_ids: Vec::new(),
             quit_menu_id: None,
+            motion,
+            motion_menu_id: None,
+            motion_menu_item: None,
             proxy,
             autostart,
             fatal_error: None,
@@ -82,7 +92,7 @@ impl App {
         self.active_effect = Some(effect);
         self.last_effect = effect;
         if let Some(renderer) = &mut self.renderer {
-            renderer.start_effect(effect);
+            renderer.start_effect(effect, self.motion);
         }
         if let Some(window) = &self.window {
             window.set_cursor_visible(false);
@@ -150,6 +160,15 @@ impl App {
         // flourish without leaving a full-screen deck.
         let hint = MenuItem::new(format!("Replay: {}", hotkey::DESCRIPTION), false, None);
         menu.append(&hint)?;
+
+        // Reachable from the menu because the person who needs it is often not
+        // the person who configured the machine: a presenter may only learn an
+        // audience member needs stillness once they are already on stage.
+        let motion_item = MenuItem::new(self.motion.menu_label(), true, None);
+        menu.append(&motion_item)?;
+        self.motion_menu_id = Some(motion_item.id().clone());
+        self.motion_menu_item = Some(motion_item);
+
         menu.append(&PredefinedMenuItem::separator())?;
         let quit = MenuItem::new("Quit Flourish", true, None);
         menu.append(&quit)?;
@@ -209,6 +228,27 @@ impl App {
         Ok(())
     }
 
+    /// Turns the timeline's state into the three numbers the renderer needs.
+    ///
+    /// This is the whole difference between the two motion paths. Full motion
+    /// animates the effect clock and drives each flourish's own geometric exit.
+    /// Reduced motion holds a settled composition and moves nothing at all,
+    /// carrying both the entrance and the exit in opacity.
+    fn frame_for(&self, now: Duration) -> Frame {
+        compose_frame(
+            self.motion,
+            self.timeline.effect_time(now),
+            self.timeline.exit_progress(now).unwrap_or(0.0),
+        )
+    }
+
+    fn set_motion(&mut self, motion: MotionPreference) {
+        self.motion = motion;
+        if let Some(item) = &self.motion_menu_item {
+            item.set_text(motion.menu_label());
+        }
+    }
+
     fn draw(&mut self) {
         if !self.timeline.is_active() {
             return;
@@ -231,8 +271,7 @@ impl App {
             }
         }
 
-        let time = self.timeline.effect_time(now);
-        let exit_progress = self.timeline.exit_progress(now).unwrap_or(0.0);
+        let frame = self.frame_for(now);
         let Some(effect) = self.active_effect else {
             self.hide_overlay();
             return;
@@ -241,7 +280,7 @@ impl App {
             return;
         };
 
-        match renderer.render(effect, time, exit_progress) {
+        match renderer.render(effect, frame) {
             RenderOutcome::Presented | RenderOutcome::Skipped | RenderOutcome::Recovered => {}
             RenderOutcome::Reconfigure => {
                 if let Some(window) = &self.window {
@@ -298,6 +337,9 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Hotkey => self.toggle_via_hotkey(),
             UserEvent::Menu(id) if self.quit_menu_id.as_ref() == Some(&id) => {
                 event_loop.exit();
+            }
+            UserEvent::Menu(id) if self.motion_menu_id.as_ref() == Some(&id) => {
+                self.set_motion(self.motion.toggled());
             }
             UserEvent::Menu(id) => {
                 let selected = self
@@ -375,6 +417,24 @@ fn make_tray_icon() -> Result<Icon, tray_icon::BadIcon> {
     Icon::from_rgba(flourish::icon::tray_rgba(SIZE), SIZE, SIZE)
 }
 
+/// Turns the timeline's state into the three numbers the renderer needs.
+///
+/// This is the entire difference between the two motion paths. Full motion
+/// advances the effect clock and drives each flourish's own geometric exit.
+/// Reduced motion holds a settled composition, moves nothing, and carries both
+/// the entrance and the exit in opacity alone.
+///
+/// Free-standing so the fade curve can be tested without standing up a window.
+fn compose_frame(motion: MotionPreference, effect_time: f32, exit_progress: f32) -> Frame {
+    if !motion.is_reduced() {
+        return Frame::animated(effect_time, exit_progress);
+    }
+
+    let fade_in = (effect_time / motion::CALM_FADE_IN.as_secs_f32()).clamp(0.0, 1.0);
+    let fade_out = 1.0 - exit_progress.clamp(0.0, 1.0);
+    Frame::calm(fade_in * fade_out)
+}
+
 /// Shows a fatal startup problem somewhere the user will actually see it.
 ///
 /// A menu-bar app launched from Finder has no terminal attached, so `eprintln!`
@@ -389,8 +449,8 @@ fn show_fatal_dialog(headline: &str, detail: &str) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let autostart = match cli::parse(std::env::args().skip(1)) {
-        cli::Invocation::Run { autostart } => autostart,
+    let (autostart, requested_motion) = match cli::parse(std::env::args().skip(1)) {
+        cli::Invocation::Run { autostart, motion } => (autostart, motion),
         cli::Invocation::PrintAndExit(message) => {
             println!("{message}");
             return Ok(());
@@ -412,8 +472,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let event_loop = builder.build()?;
     event_loop.set_control_flow(ControlFlow::Wait);
+    // An explicit flag wins; otherwise ask the system.
+    let motion = requested_motion.unwrap_or_else(motion::detect);
     let proxy = event_loop.create_proxy();
-    let mut app = App::new(proxy, autostart);
+    let mut app = App::new(proxy, autostart, motion);
     event_loop.run_app(&mut app)?;
 
     // Reported here rather than from inside the loop, where a blocking modal
@@ -434,5 +496,82 @@ mod icon_tests {
         // The art itself is covered in flourish::icon; this checks only that
         // the dimensions still satisfy tray-icon's RGBA constructor.
         assert!(make_tray_icon().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod motion_tests {
+    use super::compose_frame;
+    use flourish::{MotionPreference, motion};
+
+    const FADE: f32 = 0.42;
+
+    #[test]
+    fn full_motion_passes_the_clock_and_the_exit_straight_through() {
+        let frame = compose_frame(MotionPreference::Full, 3.0, 0.4);
+
+        assert!((frame.time - 3.0).abs() < f32::EPSILON);
+        assert!((frame.exit_progress - 0.4).abs() < f32::EPSILON);
+        assert!((frame.presence - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn reduced_motion_never_advances_the_clock_or_the_geometric_exit() {
+        // Whatever the timeline says, the calm path must move nothing. These
+        // two fields are the only ones that produce movement on screen.
+        for effect_time in [0.0, 0.2, 1.0, 9.0, 900.0] {
+            for exit_progress in [0.0, 0.25, 0.5, 1.0] {
+                let frame = compose_frame(MotionPreference::Reduced, effect_time, exit_progress);
+                assert!(
+                    frame.exit_progress.abs() < f32::EPSILON,
+                    "geometric exit leaked at t={effect_time} exit={exit_progress}"
+                );
+                assert!(
+                    (frame.time - motion::SETTLED_SECONDS).abs() < f32::EPSILON,
+                    "clock advanced at t={effect_time}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_calm_flourish_fades_in_rather_than_cutting_in() {
+        // Cutting straight to a full-screen image is itself an abrupt visual
+        // change, so presence must start at zero and climb.
+        let at = |t| compose_frame(MotionPreference::Reduced, t, 0.0).presence;
+
+        assert!(at(0.0).abs() < f32::EPSILON);
+        assert!(at(FADE / 2.0) > 0.4 && at(FADE / 2.0) < 0.6);
+        assert!((at(FADE) - 1.0).abs() < f32::EPSILON);
+        assert!(
+            (at(FADE * 10.0) - 1.0).abs() < f32::EPSILON,
+            "must not exceed one"
+        );
+    }
+
+    #[test]
+    fn a_calm_flourish_fades_out_to_nothing() {
+        let held = |exit| compose_frame(MotionPreference::Reduced, 5.0, exit).presence;
+
+        assert!((held(0.0) - 1.0).abs() < f32::EPSILON);
+        assert!((held(0.5) - 0.5).abs() < 0.001);
+        assert!(held(1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn calm_presence_is_monotonic_and_bounded() {
+        // A non-monotonic opacity ramp would read as a flicker, which is
+        // exactly what reduced motion exists to avoid.
+        let mut previous = 0.0;
+        for step in 0..=100_u16 {
+            let presence =
+                compose_frame(MotionPreference::Reduced, f32::from(step) * 0.01, 0.0).presence;
+            assert!(
+                (0.0..=1.0).contains(&presence),
+                "presence {presence} left the unit range"
+            );
+            assert!(presence >= previous, "presence dipped at step {step}");
+            previous = presence;
+        }
     }
 }
