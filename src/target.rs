@@ -20,6 +20,16 @@ pub enum Basis {
 /// The display a flourish should play on, with the reason it was chosen.
 pub struct Target {
     pub monitor: MonitorHandle,
+    /// The monitor's rectangle in global logical points.
+    ///
+    /// Carried alongside the handle because this — not `monitor.position()` —
+    /// is what the window must be placed with. winit converts a *physical*
+    /// position using the **window's** current scale factor, which is the
+    /// wrong factor whenever the window is not already on the target display:
+    /// asking for physical x=1728 while the window sits on a 2× panel puts it
+    /// at logical 864, still on the old screen. A logical position converts to
+    /// itself, so it cannot be misread.
+    pub bounds: MonitorBounds,
     pub basis: Basis,
 }
 
@@ -64,6 +74,7 @@ pub fn resolve(monitors: &[MonitorHandle], primary: Option<MonitorHandle>) -> Op
     let primary = primary.or_else(|| monitors.first().cloned());
     let fallback = || {
         primary.clone().map(|monitor| Target {
+            bounds: bounds_of(&monitor),
             monitor,
             basis: Basis::PrimaryFallback,
         })
@@ -80,6 +91,7 @@ pub fn resolve(monitors: &[MonitorHandle], primary: Option<MonitorHandle>) -> Op
     match monitor_for_point(&bounds, point) {
         Some(index) => Some(Target {
             monitor: monitors[index].clone(),
+            bounds: bounds[index],
             basis: Basis::Cursor,
         }),
         None => fallback(),
@@ -254,6 +266,33 @@ mod tests {
         let external = logical_bounds([1512, 0], [1920, 1080], 1.0);
         assert!(!laptop.contains(point_on_external));
         assert!(external.contains(point_on_external));
+    }
+
+    #[test]
+    fn placing_with_a_physical_position_would_land_on_the_wrong_display() {
+        // Regression guard. The window must be placed with the target's
+        // *logical* origin. winit converts a physical position using the
+        // window's own scale factor, so handing it the monitor's physical
+        // origin -- which was scaled by the monitor's factor instead -- lands
+        // the window somewhere else entirely whenever the two differ.
+        //
+        // Reproduces the reported failure: a flourish aimed at the external
+        // display kept appearing on the built-in one.
+        let external_physical_origin_x = 1728.0;
+        let window_scale_on_the_builtin_panel = 2.0;
+
+        let mistaken = external_physical_origin_x / window_scale_on_the_builtin_panel;
+        let builtin = logical_bounds([0, 0], [3456, 2234], 2.0);
+        assert!(
+            builtin.contains([mistaken, 10.0]),
+            "the physical origin must be shown to land back on the built-in panel"
+        );
+
+        // The logical origin is what actually reaches the external display,
+        // and is unaffected by whatever scale the window currently has.
+        let external = logical_bounds([1728, 0], [1920, 1080], 1.0);
+        assert!(external.contains([external.origin[0], 10.0]));
+        assert!(!builtin.contains([external.origin[0], 10.0]));
     }
 
     #[test]

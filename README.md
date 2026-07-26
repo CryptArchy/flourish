@@ -59,6 +59,14 @@ cargo run -- --displays
 
 Automatic targeting is macOS-only. Elsewhere the primary display is used.
 
+Placement itself depends on window-system behaviour no unit test can reproduce,
+so it has its own harness. It aims the overlay at every attached display twice
+and reports where each one actually landed:
+
+```sh
+cargo run --example placement
+```
+
 ## Reduced motion
 
 Flourish follows the system's reduce-motion setting. When it is on, every

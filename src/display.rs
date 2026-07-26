@@ -93,6 +93,63 @@ pub fn monitor_for_point(monitors: &[MonitorBounds], point: [f64; 2]) -> Option<
     Some(best)
 }
 
+/// Places `window` so it covers `bounds`, and makes it full-screen there.
+///
+/// Lives here, beside the coordinate reasoning it depends on, because the order
+/// and the units are both easy to get wrong and the failure is silent — the
+/// flourish simply appears on the wrong screen.
+///
+/// * The position and size are **logical**. winit converts a physical position
+///   using the *window's* current scale factor, which is the wrong factor
+///   whenever the window has not already moved to the target display. A logical
+///   value converts to itself and cannot be misread.
+/// * The window is shown *before* full-screen is engaged. macOS simple
+///   full-screen resizes to whatever `NSWindow.screen` reports, and that is
+///   resolved from the window's own frame, so a hidden or not-yet-moved window
+///   sends the flourish back to the display it came from.
+pub fn place_overlay(
+    window: &winit::window::Window,
+    bounds: MonitorBounds,
+    monitor: &winit::monitor::MonitorHandle,
+) {
+    use winit::dpi::{LogicalPosition, LogicalSize};
+
+    release_overlay(window);
+
+    window.set_outer_position(LogicalPosition::new(bounds.origin[0], bounds.origin[1]));
+    let _ = window.request_inner_size(LogicalSize::new(bounds.size[0], bounds.size[1]));
+    window.set_visible(true);
+
+    #[cfg(target_os = "macos")]
+    {
+        use winit::platform::macos::WindowExtMacOS;
+        // Native full-screen is deliberately avoided: it animates into its own
+        // Space, which is the opposite of what an instant overlay wants.
+        window.set_simple_fullscreen(true);
+        let _ = monitor;
+    }
+    #[cfg(not(target_os = "macos"))]
+    window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(Some(
+        monitor.clone(),
+    ))));
+}
+
+/// Releases the overlay's hold on whichever display it currently covers.
+///
+/// On macOS this also restores the menu bar and Dock, which simple full-screen
+/// suppresses for as long as it is engaged.
+pub fn release_overlay(window: &winit::window::Window) {
+    #[cfg(target_os = "macos")]
+    {
+        use winit::platform::macos::WindowExtMacOS;
+        if window.simple_fullscreen() {
+            window.set_simple_fullscreen(false);
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    window.set_fullscreen(None);
+}
+
 #[cfg(test)]
 mod tests {
     use super::{MonitorBounds, monitor_for_point};

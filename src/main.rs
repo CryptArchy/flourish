@@ -97,7 +97,7 @@ impl App {
             if target.basis == target::Basis::PrimaryFallback {
                 eprintln!("Flourish could not locate the pointer; using the primary display");
             }
-            self.move_to_target(&target);
+            self.present_on(&target);
         }
 
         let now = self.now();
@@ -105,15 +105,12 @@ impl App {
         self.timeline.start(now);
         self.active_effect = Some(effect);
         self.last_effect = effect;
-        // After move_to_target, so a warm-up sizes itself to the display the
+        // After present_on, so a warm-up sizes itself to the display the
         // flourish will actually appear on.
         if let Some(renderer) = &mut self.renderer {
             renderer.start_effect(effect, self.motion);
         }
         if let Some(window) = &self.window {
-            window.set_cursor_visible(false);
-            window.set_visible(true);
-            window.focus_window();
             window.request_redraw();
         }
     }
@@ -239,64 +236,42 @@ impl App {
         Ok(())
     }
 
-    /// Puts the overlay on `target` and makes it cover that display.
+    /// Puts the overlay on `target`, shows it, and makes it cover that display.
     ///
     /// Called before every flourish, because the presenter may have moved to a
     /// different screen since the last one.
-    fn move_to_target(&mut self, target: &Target) {
-        let Some(window) = &self.window else {
+    ///
+    /// The order here is load-bearing on macOS. Simple full-screen resizes the
+    /// window to whatever `NSWindow.screen` reports, and that is resolved from
+    /// the window's own frame — so the window has to be released from
+    /// full-screen, moved onto the target, and made visible *before* it is
+    /// engaged again. Doing it while the window is hidden or still sitting on
+    /// the previous display sends the flourish back to the old screen.
+    ///
+    /// Native full-screen is deliberately not used: it animates into its own
+    /// Space, which is the opposite of what an instant overlay wants.
+    fn present_on(&mut self, target: &Target) {
+        let Some(window) = self.window.clone() else {
             return;
         };
-        let monitor = &target.monitor;
 
-        // macOS simple full-screen is a property of the screen the window is
-        // currently on, so it has to be released before the window can be moved
-        // and re-applied afterwards. Native full-screen is deliberately avoided:
-        // it animates into its own Space, which is the opposite of what an
-        // instant overlay wants.
-        #[cfg(target_os = "macos")]
-        {
-            use winit::platform::macos::WindowExtMacOS;
-            if window.simple_fullscreen() {
-                window.set_simple_fullscreen(false);
-            }
-            window.set_outer_position(monitor.position());
-            let _ = window.request_inner_size(monitor.size());
-            window.set_simple_fullscreen(true);
-        }
+        window.set_cursor_visible(false);
+        flourish::display::place_overlay(&window, target.bounds, &target.monitor);
+        window.focus_window();
 
-        #[cfg(not(target_os = "macos"))]
-        {
-            window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(Some(
-                monitor.clone(),
-            ))));
-        }
-
-        // The new display may differ in size or scale from the last one, and
-        // the surface has to follow before anything is drawn into it.
+        // Only now is the surface size final: full-screen may have adjusted it,
+        // and the new display may differ in scale from the last one.
         if let Some(renderer) = &mut self.renderer {
             renderer.resize(window.inner_size());
         }
+        window.request_redraw();
     }
 
-    /// Releases full-screen so the overlay stops holding the display.
-    ///
-    /// On macOS this also restores the menu bar and Dock, which simple
-    /// full-screen suppresses for as long as it is engaged — leaving it on
-    /// while the window is merely hidden would keep them suppressed and make
-    /// the menu-bar icon unreachable.
+    /// Releases full-screen so the overlay stops holding the display, restoring
+    /// the menu bar and Dock that simple full-screen suppresses.
     fn release_display(&self) {
-        #[cfg(target_os = "macos")]
         if let Some(window) = &self.window {
-            use winit::platform::macos::WindowExtMacOS;
-            if window.simple_fullscreen() {
-                window.set_simple_fullscreen(false);
-            }
-        }
-
-        #[cfg(not(target_os = "macos"))]
-        if let Some(window) = &self.window {
-            window.set_fullscreen(None);
+            flourish::display::release_overlay(window);
         }
     }
 
