@@ -3,12 +3,14 @@ mod doom_fire;
 mod gravel;
 mod hotkey;
 mod renderer;
+mod target;
 
 use std::{sync::Arc, time::Duration, time::Instant};
 
 use flourish::{Flourish, MotionPreference, SignalResult, Timeline, TimelineUpdate, motion};
 use hotkey::HotkeyBinding;
 use renderer::{FlourishRenderer, Frame, RenderOutcome};
+use target::Target;
 use tray_icon::{
     Icon, TrayIcon, TrayIconBuilder,
     menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem},
@@ -46,6 +48,8 @@ struct App {
     motion_menu_item: Option<MenuItem>,
     proxy: EventLoopProxy<UserEvent>,
     autostart: Option<Flourish>,
+    /// Report the display layout and exit instead of running.
+    describe_displays: bool,
     /// Set when startup fails; reported by `main` after the loop unwinds.
     fatal_error: Option<(String, String)>,
 }
@@ -72,6 +76,7 @@ impl App {
             motion_menu_item: None,
             proxy,
             autostart,
+            describe_displays: false,
             fatal_error: None,
         }
     }
@@ -85,12 +90,23 @@ impl App {
     /// Choosing from the menu or pressing the hotkey is an explicit request for
     /// that flourish. Treating it as a dismissal instead — as this once did —
     /// silently discarded the presenter's actual choice.
-    fn start_effect(&mut self, effect: Flourish) {
+    fn start_effect(&mut self, event_loop: &ActiveEventLoop, effect: Flourish) {
+        // Chosen fresh each time: the presenter may have moved to another
+        // screen since the last flourish.
+        if let Some(target) = target::choose(event_loop) {
+            if target.basis == target::Basis::PrimaryFallback {
+                eprintln!("Flourish could not locate the pointer; using the primary display");
+            }
+            self.move_to_target(&target);
+        }
+
         let now = self.now();
         self.timeline = Timeline::new(effect.exit_duration(), effect.hold_limit());
         self.timeline.start(now);
         self.active_effect = Some(effect);
         self.last_effect = effect;
+        // After move_to_target, so a warm-up sizes itself to the display the
+        // flourish will actually appear on.
         if let Some(renderer) = &mut self.renderer {
             renderer.start_effect(effect, self.motion);
         }
@@ -104,11 +120,11 @@ impl App {
 
     /// The hotkey both summons and dismisses: pressing it during a flourish
     /// advances that flourish's exit rather than restarting it.
-    fn toggle_via_hotkey(&mut self) {
+    fn toggle_via_hotkey(&mut self, event_loop: &ActiveEventLoop) {
         if self.timeline.is_active() {
             self.handle_signal(self.now());
         } else {
-            self.start_effect(self.last_effect);
+            self.start_effect(event_loop, self.last_effect);
         }
     }
 
@@ -144,6 +160,8 @@ impl App {
             window.set_visible(false);
             window.set_cursor_visible(true);
         }
+        // Ordered after hiding so nothing flashes as the display is released.
+        self.release_display();
         self.active_effect = None;
     }
 
@@ -194,12 +212,18 @@ impl App {
         &mut self,
         event_loop: &ActiveEventLoop,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        // Deliberately not full-screen at construction. The display a flourish
+        // belongs on is only known when one is asked for, so the window is
+        // placed and made full-screen at that moment instead -- see
+        // `move_to_target`.
         let attributes = Window::default_attributes()
             .with_title("Flourish")
             .with_visible(false)
             .with_transparent(true)
             .with_decorations(false)
-            .with_resizable(false)
+            // Resizable so the window can be re-sized onto another display.
+            // With no decorations there is nothing for a user to drag anyway.
+            .with_resizable(true)
             .with_window_level(WindowLevel::AlwaysOnTop);
 
         #[cfg(target_os = "windows")]
@@ -208,24 +232,72 @@ impl App {
             attributes.with_skip_taskbar(true)
         };
 
-        #[cfg(not(target_os = "macos"))]
-        let attributes =
-            attributes.with_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
-
         let window = Arc::new(event_loop.create_window(attributes)?);
-
-        #[cfg(target_os = "macos")]
-        {
-            use winit::platform::macos::WindowExtMacOS;
-            if !window.set_simple_fullscreen(true) {
-                return Err("macOS refused simple fullscreen mode".into());
-            }
-        }
-
         let renderer = pollster::block_on(FlourishRenderer::new(Arc::clone(&window)))?;
         self.window = Some(window);
         self.renderer = Some(renderer);
         Ok(())
+    }
+
+    /// Puts the overlay on `target` and makes it cover that display.
+    ///
+    /// Called before every flourish, because the presenter may have moved to a
+    /// different screen since the last one.
+    fn move_to_target(&mut self, target: &Target) {
+        let Some(window) = &self.window else {
+            return;
+        };
+        let monitor = &target.monitor;
+
+        // macOS simple full-screen is a property of the screen the window is
+        // currently on, so it has to be released before the window can be moved
+        // and re-applied afterwards. Native full-screen is deliberately avoided:
+        // it animates into its own Space, which is the opposite of what an
+        // instant overlay wants.
+        #[cfg(target_os = "macos")]
+        {
+            use winit::platform::macos::WindowExtMacOS;
+            if window.simple_fullscreen() {
+                window.set_simple_fullscreen(false);
+            }
+            window.set_outer_position(monitor.position());
+            let _ = window.request_inner_size(monitor.size());
+            window.set_simple_fullscreen(true);
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(Some(
+                monitor.clone(),
+            ))));
+        }
+
+        // The new display may differ in size or scale from the last one, and
+        // the surface has to follow before anything is drawn into it.
+        if let Some(renderer) = &mut self.renderer {
+            renderer.resize(window.inner_size());
+        }
+    }
+
+    /// Releases full-screen so the overlay stops holding the display.
+    ///
+    /// On macOS this also restores the menu bar and Dock, which simple
+    /// full-screen suppresses for as long as it is engaged — leaving it on
+    /// while the window is merely hidden would keep them suppressed and make
+    /// the menu-bar icon unreachable.
+    fn release_display(&self) {
+        #[cfg(target_os = "macos")]
+        if let Some(window) = &self.window {
+            use winit::platform::macos::WindowExtMacOS;
+            if window.simple_fullscreen() {
+                window.set_simple_fullscreen(false);
+            }
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        if let Some(window) = &self.window {
+            window.set_fullscreen(None);
+        }
     }
 
     /// Turns the timeline's state into the three numbers the renderer needs.
@@ -300,6 +372,16 @@ impl App {
 
 impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.describe_displays {
+            let monitors: Vec<_> = event_loop.available_monitors().collect();
+            print!(
+                "{}",
+                target::describe(&monitors, event_loop.primary_monitor())
+            );
+            event_loop.exit();
+            return;
+        }
+
         if self.window.is_some() {
             return;
         }
@@ -328,13 +410,13 @@ impl ApplicationHandler<UserEvent> for App {
         }
 
         if let Some(effect) = self.autostart {
-            self.start_effect(effect);
+            self.start_effect(event_loop, effect);
         }
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
-            UserEvent::Hotkey => self.toggle_via_hotkey(),
+            UserEvent::Hotkey => self.toggle_via_hotkey(event_loop),
             UserEvent::Menu(id) if self.quit_menu_id.as_ref() == Some(&id) => {
                 event_loop.exit();
             }
@@ -347,7 +429,7 @@ impl ApplicationHandler<UserEvent> for App {
                     .iter()
                     .find_map(|(menu_id, effect)| (menu_id == &id).then_some(*effect));
                 if let Some(effect) = selected {
-                    self.start_effect(effect);
+                    self.start_effect(event_loop, effect);
                 }
             }
         }
@@ -449,8 +531,12 @@ fn show_fatal_dialog(headline: &str, detail: &str) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let (autostart, requested_motion) = match cli::parse(std::env::args().skip(1)) {
+    let invocation = cli::parse(std::env::args().skip(1));
+    let (autostart, requested_motion) = match invocation {
         cli::Invocation::Run { autostart, motion } => (autostart, motion),
+        // Deferred until after the event loop exists, since enumerating
+        // monitors requires it.
+        cli::Invocation::DescribeDisplays => (None, None),
         cli::Invocation::PrintAndExit(message) => {
             println!("{message}");
             return Ok(());
@@ -472,10 +558,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let event_loop = builder.build()?;
     event_loop.set_control_flow(ControlFlow::Wait);
+
     // An explicit flag wins; otherwise ask the system.
     let motion = requested_motion.unwrap_or_else(motion::detect);
     let proxy = event_loop.create_proxy();
     let mut app = App::new(proxy, autostart, motion);
+    // Monitors are only enumerable from a running loop, so the diagnostic is a
+    // mode of the app: it reports and exits before opening any window or tray.
+    app.describe_displays = matches!(invocation, cli::Invocation::DescribeDisplays);
     event_loop.run_app(&mut app)?;
 
     // Reported here rather than from inside the loop, where a blocking modal

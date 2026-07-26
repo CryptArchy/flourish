@@ -1,9 +1,11 @@
 //! Shared, renderer-independent Flourish behavior.
 
+pub mod display;
 pub mod icon;
 pub mod motion;
 mod timeline;
 
+pub use display::MonitorBounds;
 pub use motion::MotionPreference;
 pub use timeline::{SignalResult, Timeline, TimelineUpdate};
 

@@ -4,7 +4,7 @@ type: ticket
 project: flourish
 tags: [multimonitor, tray, macos, winit, platform]
 status: final
-step: open
+step: built
 author: Christopher Andrews
 created_date: 2026-07-20
 source: file
@@ -59,12 +59,53 @@ ordering.
 
 ### Automated Verification
 
-- [ ] Unit-test point-to-monitor resolution including negative coordinates and
-  boundary fallback.
-- [ ] Renderer resizes/reconfigures when the target display changes.
+- [x] Unit-test point-to-monitor resolution including negative coordinates and
+  boundary fallback. — `src/display.rs`, 9 cases: negative origins, shared
+  borders, gaps, non-finite input, single and zero monitors.
+- [x] Renderer resizes/reconfigures when the target display changes. —
+  `App::move_to_target` calls `renderer.resize` after placing the window.
 
 ### Manual Verification
 
 - [ ] Opening the Flourish menu on each macOS display targets that display.
 - [ ] Repeatedly alternating monitors does not leave a stuck overlay or change
   presentation focus unexpectedly.
+
+## Implementation notes
+
+**The signal is the pointer, not the tray click.** This ticket predates the
+global shortcut, which carries no click position at all. The pointer covers
+both entry points: clicking the menu-bar icon necessarily puts it on that
+display, and pressing the shortcut puts it where the presenter is working.
+`TrayIconEvent`'s position would only have covered the first.
+
+**Everything happens in logical coordinates**, which turned out to be
+load-bearing rather than stylistic. winit reports a monitor's `position()` as
+its logical origin already multiplied by *that monitor's own* scale factor,
+while `size()` is the true pixel count. On this machine that means:
+
+| Display | Physical | Scale | Logical |
+| --- | --- | --- | --- |
+| Primary | 3456x2234 at (0, 0) | 2 | 1728x1117 at (0, 0) |
+| External | 1920x1080 at (1728, 0) | 1 | 1920x1080 at (1728, 0) |
+
+In physical space the primary spans x from 0 to 3456 and therefore contains the
+external display's origin at 1728 — the two overlap, and a containment test
+would put most of the external display "inside" the primary. Dividing both
+position and size by each monitor's own scale factor makes them tile exactly,
+with the primary ending at 1728 precisely where the external begins. That exact
+abutment is also the check that the conversion is right: a wrong scale would
+leave a gap or an overlap.
+
+The same reasoning rules out `CGDisplayPixelsHigh` for flipping the pointer's
+vertical axis, which is what `tray-icon` uses internally: it is a pixel height
+subtracted from a point-space coordinate, so on any Retina primary it is off by
+the scale factor. The flip here uses the primary's *logical* height, derived
+the same way as the bounds it is compared against.
+
+**Full-screen is now entered per flourish rather than once at startup**, since
+the target display is only known when a flourish is asked for. On macOS simple
+full-screen is a property of the screen the window currently occupies, so it is
+released, the window moved, and it is re-applied. Releasing it on hide also
+resolves a latent issue: simple full-screen suppresses the menu bar and Dock
+for as long as it is engaged, and the old code never turned it off.

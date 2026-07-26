@@ -14,6 +14,9 @@ pub enum Invocation {
         /// `None` means the command line did not say, so ask the system.
         motion: Option<MotionPreference>,
     },
+    /// Print the display layout and pointer resolution, then exit. Needs an
+    /// event loop to enumerate monitors, so it cannot be answered here.
+    DescribeDisplays,
     /// Print text and exit successfully.
     PrintAndExit(String),
     /// Print an error and exit unsuccessfully.
@@ -30,6 +33,8 @@ OPTIONS:
     --autostart[=<FLOURISH>]  Play a flourish immediately at launch.
                               Defaults to the signature Curtain.
     --list                    List every flourish and its slug.
+    --displays                Show the display layout, where the pointer is,
+                              and which display a flourish would target.
     --reduce-motion           Hold each flourish still and cross-fade instead
                               of animating. Overrides the system setting.
     --full-motion             Animate even if the system asks for reduced
@@ -67,6 +72,7 @@ where
                 ));
             }
             "--list" => return Invocation::PrintAndExit(catalog_listing()),
+            "--displays" => return Invocation::DescribeDisplays,
             "--autostart" => autostart = Some(Flourish::Curtain),
             _ => {
                 let Some(slug) = argument.strip_prefix("--autostart=") else {

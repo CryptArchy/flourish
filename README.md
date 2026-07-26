@@ -43,6 +43,22 @@ is deliberately hard to get stuck behind one:
   15 seconds, and losing window focus also starts its exit — a presenter whose
   pointer is on another display is never stranded.
 
+## Multiple displays
+
+A flourish plays on the display the pointer is on, so it appears where you are
+looking rather than wherever the window system calls primary. That covers both
+ways of starting one: clicking the menu-bar icon puts the pointer on that
+display, and the global shortcut puts it wherever you are working.
+
+If a flourish lands on the wrong screen, this prints the layout as the window
+system sees it, which is usually not how it looks on the desk:
+
+```sh
+cargo run -- --displays
+```
+
+Automatic targeting is macOS-only. Elsewhere the primary display is used.
+
 ## Reduced motion
 
 Flourish follows the system's reduce-motion setting. When it is on, every
@@ -74,6 +90,7 @@ This repository contains an expanded macOS vertical slice:
 - Native Rust shell using `winit`, `wgpu`, and `tray-icon`
 - Menu-bar-only idle state with twelve Flourishes and Quit actions
 - Global shortcut for summoning and dismissing from inside a full-screen deck
+- Flourishes target the display the pointer is on, across mixed-DPI layouts
 - Celebratory party-popper template icon on macOS, with color on other trays
 - Transparent full-screen procedural shader catalog, seeded per performance
 - Reduced-motion path that holds each flourish still and cross-fades, following
