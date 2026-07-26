@@ -65,12 +65,43 @@ macOS simple fullscreen, graceful effect lifecycle.
 
 ### Automated Verification
 
-- [ ] Effect lifecycle tests cover start, graceful exit, double-signal kill,
-  and natural completion.
-- [ ] Catalog tests cover stable menu labels, shader identifiers, and exit
-  durations for every built-in flourish.
-- [ ] The renderer and tray shell compile on the supported desktop targets.
-- [ ] Shader validation and Rust static checks pass.
+Ticked 2026-07-26 against commit `c6c4536`; 81 tests passing.
+
+- [x] Effect lifecycle tests cover start, graceful exit, double-signal kill,
+  and natural completion. — `src/timeline.rs`, one test per transition:
+  `first_signal_starts_a_graceful_exit` (start and graceful exit),
+  `second_signal_during_exit_hides_immediately` (double-signal kill),
+  `graceful_exit_completes_at_its_deadline` and
+  `natural_completion_returns_to_idle` (natural completion). Three more cover
+  the hold ceiling added later: `an_unattended_hold_dismisses_itself`,
+  `the_hold_ceiling_preserves_the_effect_clock`, and
+  `a_manual_signal_still_wins_before_the_ceiling`.
+- [x] Catalog tests cover stable menu labels, shader identifiers, and exit
+  durations for every built-in flourish. — `src/lib.rs`,
+  `catalog_metadata_is_unique_and_presentation_safe` asserts labels, slugs, and
+  shader ids are each unique across `Flourish::ALL` and that no exit duration is
+  zero; `every_slug_round_trips` and `slugs_are_command_line_safe` pin the
+  command-line identifiers. Every one of these iterates `Flourish::ALL`, so
+  adding a flourish extends the coverage rather than escaping it — and since the
+  catalog is generated from a single macro table, a variant cannot be added
+  without a label, slug, id, and duration.
+- [x] The renderer and tray shell compile on the supported desktop targets. —
+  CI builds and tests on macos-latest, windows-latest, and ubuntu-latest, plus a
+  job pinned to the declared 1.88 MSRV and a release build that exercises the
+  LTO profile the debug jobs never touch. All green:
+  <https://github.com/CryptArchy/flourish/actions/runs/30224911169>
+- [x] Shader validation and Rust static checks pass. — `tests/shaders.rs` parses
+  and fully validates every WGSL file with naga at test time rather than
+  discovering shader errors on stage, and cross-checks that the shared catalog
+  declares an arm for each effect's id. Static checks are
+  `cargo fmt --all -- --check` and `cargo clippy --all-targets --locked -D
+  warnings` under `unsafe_code = "forbid"` with clippy pedantic enabled.
+
+Two harnesses cover behaviour no unit test can reach, and both are run manually
+rather than in CI because they need real hardware:
+`cargo run --example placement` (the overlay lands on the display it was aimed
+at) and `cargo run --release -- --benchmark` (frame-time against budget; results
+in the `flourish-frame-time-budget` note).
 
 ### Manual Verification
 
