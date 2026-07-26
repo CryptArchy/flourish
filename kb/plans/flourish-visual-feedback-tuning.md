@@ -4,7 +4,7 @@ type: plan
 project: flourish
 tags: [wgpu, compute, shaders, visual-tuning]
 status: final
-outcome: pending
+outcome: partial
 author: Christopher Andrews
 created_date: 2026-07-18
 upstream: [presentation-flourish-runner, 2026-07-18_doom-fire-and-alpha]

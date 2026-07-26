@@ -4,7 +4,7 @@ type: plan
 project: flourish
 tags: [rust, shaders, menu-bar, visual-design]
 status: final
-outcome: pending
+outcome: partial
 author: Christopher Andrews
 created_date: 2026-07-18
 upstream: [presentation-flourish-runner, flourish-v0-curtain-review]

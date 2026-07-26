@@ -4,7 +4,7 @@ type: plan
 project: flourish
 tags: [wgpu, shaders, particles, hello-gravel, visual-design]
 status: final
-outcome: pending
+outcome: partial
 author: Christopher Andrews
 created_date: 2026-07-18
 upstream: [presentation-flourish-runner, flourish-gravel-fall]
