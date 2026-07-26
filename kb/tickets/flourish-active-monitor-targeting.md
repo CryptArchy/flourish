@@ -4,9 +4,10 @@ type: ticket
 project: flourish
 tags: [multimonitor, tray, macos, winit, platform]
 status: final
-step: built
+step: done
 author: Christopher Andrews
 created_date: 2026-07-20
+closed_date: 2026-07-26
 source: file
 ---
 
@@ -63,12 +64,13 @@ ordering.
   boundary fallback. — `src/display.rs`, 9 cases: negative origins, shared
   borders, gaps, non-finite input, single and zero monitors.
 - [x] Renderer resizes/reconfigures when the target display changes. —
-  `App::move_to_target` calls `renderer.resize` after placing the window.
+  `App::present_on` calls `renderer.resize` after the window is placed and
+  full-screen has settled the final surface size.
 
 ### Manual Verification
 
-- [ ] Opening the Flourish menu on each macOS display targets that display.
-- [ ] Repeatedly alternating monitors does not leave a stuck overlay or change
+- [x] Opening the Flourish menu on each macOS display targets that display.
+- [x] Repeatedly alternating monitors does not leave a stuck overlay or change
   presentation focus unexpectedly.
 
 ## Implementation notes
@@ -106,6 +108,14 @@ the same way as the bounds it is compared against.
 **Full-screen is now entered per flourish rather than once at startup**, since
 the target display is only known when a flourish is asked for. On macOS simple
 full-screen is a property of the screen the window currently occupies, so it is
-released, the window moved, and it is re-applied. Releasing it on hide also
-resolves a latent issue: simple full-screen suppresses the menu bar and Dock
-for as long as it is engaged, and the old code never turned it off.
+released, the window moved and *shown*, and only then re-applied — engaging it
+while the window is hidden or still on the old display resolves against the
+wrong screen. Releasing it on hide also resolves a latent issue: simple
+full-screen suppresses the menu bar and Dock for as long as it is engaged, and
+the old code never turned it off.
+
+The first implementation of this shipped with a regression that manual testing
+caught; see the review for what broke and why. Placement lives in
+`flourish::display::place_overlay` beside the coordinate reasoning it depends
+on, and `examples/placement.rs` is a harness that aims the overlay at every
+attached display and reports where it actually landed.
