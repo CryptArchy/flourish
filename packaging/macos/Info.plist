@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>Flourish</string>
+	<key>CFBundleDisplayName</key>
+	<string>Flourish</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.cryptarchy.flourish</string>
+	<key>CFBundleExecutable</key>
+	<string>flourish</string>
+	<key>CFBundleIconFile</key>
+	<string>Flourish</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+
+	<!-- Substituted by scripts/bundle-macos.sh from the version in Cargo.toml. -->
+	<key>CFBundleShortVersionString</key>
+	<string>__VERSION__</string>
+	<key>CFBundleVersion</key>
+	<string>__VERSION__</string>
+
+	<!-- Flourish is a menu-bar agent. Without this it would take a Dock tile
+	     and appear in the app switcher, and on launch it would steal focus
+	     from the deck the presenter is running. The binary also sets
+	     NSApplicationActivationPolicyAccessory at runtime so `cargo run`
+	     behaves the same way, but only this key gets it right from the very
+	     first frame. -->
+	<key>LSUIElement</key>
+	<true/>
+
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<!-- The overlay is drawn by the app itself and is never a document. -->
+	<key>NSSupportsAutomaticGraphicsSwitching</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>MIT licensed. See LICENSE.</string>
+</dict>
+</plist>

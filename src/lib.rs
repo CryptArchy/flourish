@@ -1,5 +1,6 @@
 //! Shared, renderer-independent Flourish behavior.
 
+pub mod icon;
 mod timeline;
 
 pub use timeline::{SignalResult, Timeline, TimelineUpdate};

@@ -49,6 +49,44 @@ jobs:
       - name: Build release
         run: cargo build --locked --release
 
+  bundle:
+    name: macOS app bundle
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build Flourish.app
+        run: scripts/bundle-macos.sh --universal
+
+      # The bundle is only useful if macOS agrees it is one, so check the
+      # things a broken bundle gets wrong: a malformed plist, a missing agent
+      # flag, a signature that does not verify, or a thin binary.
+      - name: Verify the bundle
+        run: |
+          set -euo pipefail
+          app=target/bundle/Flourish.app
+          plutil -lint "$app/Contents/Info.plist"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          test -f "$app/Contents/Resources/Flourish.icns"
+          [ "$(plutil -extract LSUIElement raw "$app/Contents/Info.plist")" = "true" ]
+          lipo -archs "$app/Contents/MacOS/flourish" | tee /dev/stderr | grep -q "arm64"
+          lipo -archs "$app/Contents/MacOS/flourish" | grep -q "x86_64"
+
+      # Ad-hoc signed, so useful for testing but not distributable. See
+      # packaging/macos/README.md.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Flourish-macos-universal
+          path: target/bundle/Flourish.app
+          if-no-files-found: error
+
   minimum-rust-version:
     name: MSRV
     runs-on: ubuntu-latest

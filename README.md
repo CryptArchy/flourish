@@ -62,6 +62,22 @@ build in CI but have **not** been manually verified and are not claimed as
 shipped. Wayland stacking behavior and Linux GTK/AppIndicator packaging are
 explicit follow-up work.
 
+## Install on macOS
+
+Build a proper menu-bar app and drag it to `/Applications`:
+
+```sh
+scripts/bundle-macos.sh --universal
+```
+
+The bundle is an agent — no Dock tile, no app-switcher entry, and no stealing
+focus from your deck when it launches. Its icon is drawn by the same code that
+draws the menu-bar icon, so there are no image files in this repository.
+
+It is ad-hoc signed, which is enough to run on the machine that built it.
+Distributing it to anyone else needs a Developer ID and notarization; see
+[`packaging/macos/README.md`](packaging/macos/README.md).
+
 ## Run locally
 
 You need Rust 1.88 or newer.

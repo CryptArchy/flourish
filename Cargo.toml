@@ -39,3 +39,4 @@ pedantic = "warn"
 
 [dev-dependencies]
 naga = { version = "30", features = ["wgsl-in"] }
+png = "0.18"

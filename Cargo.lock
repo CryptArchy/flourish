@@ -537,6 +537,7 @@ dependencies = [
  "bytemuck",
  "global-hotkey",
  "naga",
+ "png",
  "pollster",
  "rfd",
  "thiserror 2.0.18",
