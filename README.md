@@ -67,6 +67,22 @@ and reports where each one actually landed:
 cargo run --example placement
 ```
 
+## Performance
+
+Flourish deliberately asks for the low-power adapter, and some effects are
+heavy per-pixel shaders, so the cost is measurable rather than assumed:
+
+```sh
+cargo run --release -- --benchmark
+```
+
+That renders every flourish offscreen from 1080p to 5K through the same drawing
+path the app uses, and reports sustained milliseconds per frame against the
+60Hz and 120Hz budgets. On an Apple M5 Max the worst case is Frosted Glass at
+5K, about half the 120Hz budget; results and the caveat about older Intel
+machines are in
+[`kb/notes/flourish-frame-time-budget.md`](kb/notes/flourish-frame-time-budget.md).
+
 ## Reduced motion
 
 Flourish follows the system's reduce-motion setting. When it is on, every

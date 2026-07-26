@@ -17,6 +17,8 @@ pub enum Invocation {
     /// Print the display layout and pointer resolution, then exit. Needs an
     /// event loop to enumerate monitors, so it cannot be answered here.
     DescribeDisplays,
+    /// Measure how long each flourish takes to draw, then exit.
+    Benchmark,
     /// Print text and exit successfully.
     PrintAndExit(String),
     /// Print an error and exit unsuccessfully.
@@ -35,6 +37,8 @@ OPTIONS:
     --list                    List every flourish and its slug.
     --displays                Show the display layout, where the pointer is,
                               and which display a flourish would target.
+    --benchmark               Measure how long each flourish takes to draw,
+                              from 1080p to 5K, against the frame budget.
     --reduce-motion           Hold each flourish still and cross-fade instead
                               of animating. Overrides the system setting.
     --full-motion             Animate even if the system asks for reduced
@@ -73,6 +77,7 @@ where
             }
             "--list" => return Invocation::PrintAndExit(catalog_listing()),
             "--displays" => return Invocation::DescribeDisplays,
+            "--benchmark" => return Invocation::Benchmark,
             "--autostart" => autostart = Some(Flourish::Curtain),
             _ => {
                 let Some(slug) = argument.strip_prefix("--autostart=") else {

@@ -1,3 +1,4 @@
+mod benchmark;
 mod cli;
 mod doom_fire;
 mod gravel;
@@ -512,6 +513,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Deferred until after the event loop exists, since enumerating
         // monitors requires it.
         cli::Invocation::DescribeDisplays => (None, None),
+        // Offscreen, so it needs no event loop, window, or display at all.
+        cli::Invocation::Benchmark => {
+            benchmark::run()?;
+            return Ok(());
+        }
         cli::Invocation::PrintAndExit(message) => {
             println!("{message}");
             return Ok(());

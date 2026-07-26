@@ -102,11 +102,22 @@ struct Uniforms {
     _reserved: [f32; 3],
 }
 
-pub struct FlourishRenderer {
-    surface: wgpu::Surface<'static>,
+/// The adapter Flourish asks for.
+///
+/// `LowPower` keeps a laptop on its integrated GPU, which matters for a tool
+/// that runs for two seconds at a time during a talk. Shared so the benchmark
+/// measures the same GPU a flourish will actually run on, rather than a
+/// flattering one.
+pub const POWER_PREFERENCE: wgpu::PowerPreference = wgpu::PowerPreference::LowPower;
+
+/// Everything needed to draw a flourish, with no surface attached.
+///
+/// Split out from [`FlourishRenderer`] so the exact drawing path can also be
+/// run into an offscreen texture — a benchmark that measured a reimplementation
+/// of this would measure the wrong thing the moment the two drifted.
+pub struct Scene {
     device: wgpu::Device,
     queue: wgpu::Queue,
-    config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
     uniforms: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
@@ -114,6 +125,12 @@ pub struct FlourishRenderer {
     gravel: GravelEffect,
     size: PhysicalSize<u32>,
     seed: u32,
+}
+
+pub struct FlourishRenderer {
+    surface: wgpu::Surface<'static>,
+    config: wgpu::SurfaceConfiguration,
+    scene: Scene,
     reported_validation_error: bool,
     consecutive_surface_losses: u32,
 }
@@ -121,6 +138,130 @@ pub struct FlourishRenderer {
 /// How many back-to-back surface losses to absorb before treating the surface
 /// as genuinely gone rather than momentarily disturbed by a display change.
 const MAX_SURFACE_RECOVERY_ATTEMPTS: u32 = 3;
+
+impl Scene {
+    pub fn new(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        format: wgpu::TextureFormat,
+        size: PhysicalSize<u32>,
+    ) -> Self {
+        let seed = fresh_seed();
+        let doom_fire = DoomFireSimulation::new(&device);
+        let gravel = GravelEffect::new(&device, format, size, seed);
+        let (pipeline, uniforms, bind_group) = create_pipeline(
+            &device,
+            format,
+            size_to_resolution(size),
+            seed,
+            doom_fire.render_layout(),
+        );
+
+        Self {
+            device,
+            queue,
+            pipeline,
+            uniforms,
+            bind_group,
+            doom_fire,
+            gravel,
+            size,
+            seed,
+        }
+    }
+
+    pub const fn device(&self) -> &wgpu::Device {
+        &self.device
+    }
+
+    /// Retargets at a new size. The gravel pile deliberately survives this.
+    pub fn resize(&mut self, size: PhysicalSize<u32>) {
+        self.size = size;
+        self.gravel.resize(size);
+    }
+
+    /// Re-seeds and rewinds any stateful simulation so a repeat performance of
+    /// the same flourish does not replay the previous one frame for frame.
+    ///
+    /// Doom Fire and Gravel Fall are simulations rather than functions of time.
+    /// The calm path holds the clock still, so they are stepped to a settled
+    /// state up front — otherwise reduced motion would fade in an empty screen
+    /// and a single lit row.
+    pub fn start_effect(&mut self, effect: Flourish, motion: MotionPreference) {
+        self.seed = fresh_seed();
+        match (effect, motion.is_reduced()) {
+            (Flourish::DoomFire, false) => self.doom_fire.reset(&self.queue, self.seed),
+            (Flourish::DoomFire, true) => {
+                self.doom_fire.warm_up(&self.device, &self.queue, self.seed);
+            }
+            (Flourish::GravelFall, false) => self.gravel.reset(self.size, self.seed),
+            (Flourish::GravelFall, true) => self.gravel.warm_up(self.size, self.seed),
+            _ => {}
+        }
+    }
+
+    /// Draws one frame into `view` and submits it.
+    ///
+    /// The single drawing path: the on-screen renderer and the benchmark both
+    /// come through here.
+    pub fn draw_into(&mut self, view: &wgpu::TextureView, effect: Flourish, frame: Frame) {
+        let uniforms = Uniforms {
+            resolution: size_to_resolution(self.size),
+            time: frame.time,
+            exit_progress: frame.exit_progress,
+            effect_id: effect.shader_id(),
+            seed: self.seed,
+            effect_size: DOOM_SIZE,
+            presence: frame.presence,
+            _reserved: [0.0; 3],
+        };
+        self.queue
+            .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
+        if effect == Flourish::GravelFall {
+            self.gravel
+                .prepare(&self.queue, frame.time, frame.exit_progress, frame.presence);
+        }
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Flourish frame encoder"),
+            });
+        if effect == Flourish::DoomFire {
+            // A warmed-up field has its step gate held shut, so this is a no-op
+            // on the calm path and the fire stays exactly as settled.
+            self.doom_fire
+                .encode_step(&mut encoder, &self.queue, frame.time, frame.exit_progress);
+        }
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Flourish render pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            if effect == Flourish::GravelFall {
+                self.gravel.render(&mut pass);
+            } else {
+                pass.set_pipeline(&self.pipeline);
+                pass.set_bind_group(0, &self.bind_group, &[]);
+                pass.set_bind_group(1, self.doom_fire.render_bind_group(), &[]);
+                pass.draw(0..3, 0..1);
+            }
+        }
+        self.queue.submit(Some(encoder.finish()));
+    }
+}
 
 impl FlourishRenderer {
     pub async fn new(window: Arc<Window>) -> Result<Self, RendererError> {
@@ -131,7 +272,7 @@ impl FlourishRenderer {
         let surface = instance.create_surface(window)?;
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::LowPower,
+                power_preference: POWER_PREFERENCE,
                 force_fallback_adapter: false,
                 compatible_surface: Some(&surface),
                 apply_limit_buckets: false,
@@ -175,29 +316,10 @@ impl FlourishRenderer {
         };
         surface.configure(&device, &config);
 
-        let seed = fresh_seed();
-        let doom_fire = DoomFireSimulation::new(&device);
-        let gravel = GravelEffect::new(&device, format, size, seed);
-        let (pipeline, uniform_buffer, bind_group) = create_pipeline(
-            &device,
-            format,
-            size_to_resolution(size),
-            seed,
-            doom_fire.render_layout(),
-        );
-
         Ok(Self {
             surface,
-            device,
-            queue,
             config,
-            pipeline,
-            uniforms: uniform_buffer,
-            bind_group,
-            doom_fire,
-            gravel,
-            size,
-            seed,
+            scene: Scene::new(device, queue, format, size),
             reported_validation_error: false,
             consecutive_surface_losses: 0,
         })
@@ -212,7 +334,7 @@ impl FlourishRenderer {
             return RenderOutcome::SurfaceLost;
         }
 
-        self.surface.configure(&self.device, &self.config);
+        self.surface.configure(self.scene.device(), &self.config);
         RenderOutcome::Recovered
     }
 
@@ -221,52 +343,18 @@ impl FlourishRenderer {
             return;
         }
 
-        self.size = size;
         self.config.width = size.width;
         self.config.height = size.height;
-        self.surface.configure(&self.device, &self.config);
-        self.gravel.resize(size);
+        self.surface.configure(self.scene.device(), &self.config);
+        self.scene.resize(size);
     }
 
-    /// Re-seeds and rewinds any stateful simulation so a repeat performance of
-    /// the same flourish does not replay the previous one frame for frame.
-    ///
-    /// Doom Fire and Gravel Fall are simulations rather than functions of time.
-    /// The calm path holds the clock still, so they are stepped to a settled
-    /// state up front — otherwise reduced motion would fade in an empty screen
-    /// and a single lit row.
     pub fn start_effect(&mut self, effect: Flourish, motion: MotionPreference) {
-        self.seed = fresh_seed();
         self.reported_validation_error = false;
-        match (effect, motion.is_reduced()) {
-            (Flourish::DoomFire, false) => self.doom_fire.reset(&self.queue, self.seed),
-            (Flourish::DoomFire, true) => {
-                self.doom_fire.warm_up(&self.device, &self.queue, self.seed);
-            }
-            (Flourish::GravelFall, false) => self.gravel.reset(self.size, self.seed),
-            (Flourish::GravelFall, true) => self.gravel.warm_up(self.size, self.seed),
-            _ => {}
-        }
+        self.scene.start_effect(effect, motion);
     }
 
     pub fn render(&mut self, effect: Flourish, frame: Frame) -> RenderOutcome {
-        let uniforms = Uniforms {
-            resolution: size_to_resolution(self.size),
-            time: frame.time,
-            exit_progress: frame.exit_progress,
-            effect_id: effect.shader_id(),
-            seed: self.seed,
-            effect_size: DOOM_SIZE,
-            presence: frame.presence,
-            _reserved: [0.0; 3],
-        };
-        self.queue
-            .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
-        if effect == Flourish::GravelFall {
-            self.gravel
-                .prepare(&self.queue, frame.time, frame.exit_progress, frame.presence);
-        }
-
         let (surface_texture, reconfigure_after_present) = match self.surface.get_current_texture()
         {
             wgpu::CurrentSurfaceTexture::Success(texture) => {
@@ -296,47 +384,10 @@ impl FlourishRenderer {
         let view = surface_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Flourish frame encoder"),
-            });
-        if effect == Flourish::DoomFire {
-            // A warmed-up field has its step gate held shut, so this is a no-op
-            // on the calm path and the fire stays exactly as settled.
-            self.doom_fire
-                .encode_step(&mut encoder, &self.queue, frame.time, frame.exit_progress);
-        }
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Flourish render pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            if effect == Flourish::GravelFall {
-                self.gravel.render(&mut pass);
-            } else {
-                pass.set_pipeline(&self.pipeline);
-                pass.set_bind_group(0, &self.bind_group, &[]);
-                pass.set_bind_group(1, self.doom_fire.render_bind_group(), &[]);
-                pass.draw(0..3, 0..1);
-            }
-        }
-        self.queue.submit(Some(encoder.finish()));
-        self.queue.present(surface_texture);
+        self.scene.draw_into(&view, effect, frame);
+        self.scene.queue.present(surface_texture);
         if reconfigure_after_present {
-            self.surface.configure(&self.device, &self.config);
+            self.surface.configure(self.scene.device(), &self.config);
         }
         RenderOutcome::Presented
     }
