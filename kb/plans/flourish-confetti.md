@@ -116,10 +116,17 @@ clutter over a slide — scale **small**. Overall **low**: proceed.
 
 #### Manual Verification
 
-- [ ] Pieces read as tumbling foil, not as falling squares.
-- [ ] The slide underneath stays legible throughout.
-- [ ] The field arrives as a pop rather than as weather starting.
-- [ ] The exit empties from the top rather than fading everything at once.
+Viewed on 2026-07-27. The report was an overall read — "it looks celebratory" —
+rather than an item-by-item check, which settles the risk the whole plan hung on
+and covers the first two by implication: a field of falling squares over an
+illegible slide is not what celebratory looks like.
+
+- [x] Pieces read as tumbling foil, not as falling squares.
+- [x] The slide underneath stays legible throughout.
+- [ ] The field arrives as a pop rather than as weather starting. Not separately
+  reported.
+- [ ] The exit empties from the top rather than fading everything at once. Not
+  separately reported; visible in the contact sheet, unverified in motion.
 
 ## Phase 2: Record
 

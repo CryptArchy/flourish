@@ -13,13 +13,14 @@ upstream: [flourish-confetti]
 
 ## Implementation Status
 
-**Complete, pending the motion check.** Confetti is registered, drawing,
-benchmarked, and documented — the eighteenth flourish and the first proposed
-from scratch rather than drawn from the closed backlog.
+**Complete and accepted.** Confetti is registered, drawing, benchmarked, and
+documented — the eighteenth flourish and the first proposed from scratch rather
+than drawn from the closed backlog.
 
 Composition and alpha were reviewed from `--frames`, which is the shipped tool
-for that now rather than a throwaway harness. Whether foil *tumbles* is a claim
-about motion, and this review does not make it.
+for that now rather than a throwaway harness. The motion check followed on
+2026-07-27: it reads as celebratory, which is the verdict the whole plan hung
+on. A transparent flourish works.
 
 ## Automated Verification Results
 
@@ -62,11 +63,10 @@ about motion, and this review does not make it.
 
 ### Potential issues
 
-- **The transparency is the risk, and it cuts both ways.** Confetti over a live
-  slide is the whole idea, but it is also the only flourish that never takes
-  the screen, so it may read as clutter over content rather than as
-  celebration. Pond Ripples is the precedent at 0.325 peak alpha; this one is
-  opaque where a piece covers, transparent everywhere else.
+- ~~The transparency is the risk, and it cuts both ways.~~ Settled by viewing:
+  it celebrates rather than clutters. Worth keeping as precedent — a flourish
+  that never takes the screen is a legitimate shape for this catalog, not just
+  an exception Pond Ripples got away with.
 - Pieces cast no shadow, so they sit *on* the slide rather than above it. A
   cheap offset shadow would fix it and would double the shape cost.
 - The foil flash is a `pow(1 - |cos|, 6)` term near edge-on. It is plausible in
@@ -78,19 +78,23 @@ about motion, and this review does not make it.
 
 ## Manual Testing Required
 
-- **Watch it over a real slide.** The question is whether it celebrates or
-  clutters, and it is the only one that matters here.
-- Confirm pieces read as tumbling foil rather than as falling squares.
-- Confirm the opening reads as a pop rather than as an abrupt start.
+- ~~Watch it over a real slide.~~ Done: it celebrates.
+- ~~Confirm pieces read as tumbling foil rather than as falling squares.~~
+  Covered by the same viewing.
+- Confirm the opening reads as a pop rather than as an abrupt start. Not
+  separately reported, and the plan flagged it as the weaker of the two claims
+  the launch term makes.
 - Double-signal during the exit and confirm immediate removal.
 - Toggle Reduce Motion and confirm a settled frame and a cross-fade.
 
 ## Recommendations
 
-If it reads as clutter, the first lever is density rather than opacity: fewer,
-larger pieces keep the celebration and give the slide back. Thinning the near
-layer alone would also buy most of the frame time back.
+It read well, so neither lever was needed. Keeping both on record: density
+before opacity if it ever feels like clutter over a busier slide, and a piece
+shadow if it ever feels flat — that is the only cue that would put the confetti
+in front of the screen rather than on it, and it is worth the doubled shape
+cost when it is wanted.
 
-If it reads well but flat, the shadow is the next thing to add, and it is worth
-the doubled shape cost — it is the only cue that would put the confetti in front
-of the screen rather than on it.
+The wider result is that a transparent flourish works, which the catalog did not
+know before. Any future effect that wants to decorate the screen rather than
+take it now has a precedent built on purpose rather than one inherited.
