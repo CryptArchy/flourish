@@ -18,6 +18,8 @@ talk does not replay the same picture.
 | Flourish | While it waits | Graceful exit |
 | --- | --- | --- |
 | Curtain | Lit velvet subtly rustles | Draws open from the center |
+| Marquee Bulbs | Edison bulbs warm and cool at their own pace | Every filament runs past full, then they pop out one by one |
+| Spotlight | A warm follow-spot searches a dark stage through its own dusty beam | The pool floods outward and the screen returns behind the light |
 | Projector Iris | Soot-black overlapping blades hold around a tungsten pinhole | The mechanical aperture spirals open |
 | Geological Strata | Textured sediment bands form a dramatic road cut | A crooked fault opens and both land masses shear away |
 | Frosted Glass | Dendritic ice creeps over a translucent pane | Irregular warm fronts melt through the frost |
@@ -26,6 +28,7 @@ talk does not replay the same picture.
 | Fire | Fluid procedural flames and embers lick upward | Gutters down to nothing |
 | Doom Fire | Pixel heat propagates through a PSX-inspired automaton | Source cools and the field fades |
 | Gravel Fall | Faceted stones tumble down and build a natural pile | The floor vanishes and the whole pile drops away |
+| Constellation | A twinkling star field with quiet asterism lines | The lines retract, the sky leaves as a meteor shower, and the night is swept off behind it |
 | Blackout | A clean, nearly pure black screen | Diagonal wipe reveal |
 | Kaleidoscope | Jewel-toned mirrored facets turn | Radial aperture reveal |
 | Mosaic | Colored beveled tiles drift by row | Tiles shrink away in sequence |
@@ -112,7 +115,7 @@ menu.
 This repository contains an expanded macOS vertical slice:
 
 - Native Rust shell using `winit`, `wgpu`, and `tray-icon`
-- Menu-bar-only idle state with twelve Flourishes and Quit actions
+- Menu-bar-only idle state with fifteen Flourishes and Quit actions
 - Global shortcut for summoning and dismissing from inside a full-screen deck
 - Flourishes target the display the pointer is on, across mixed-DPI layouts
 - Celebratory party-popper template icon on macOS, with color on other trays

@@ -26,6 +26,9 @@ const EFFECT_PROJECTOR_IRIS: u32 = 8u;
 const EFFECT_GEOLOGICAL_STRATA: u32 = 9u;
 const EFFECT_FROSTED_GLASS: u32 = 10u;
 const EFFECT_CRT_SHUTDOWN: u32 = 11u;
+const EFFECT_MARQUEE_BULBS: u32 = 12u;
+const EFFECT_CONSTELLATION: u32 = 13u;
+const EFFECT_SPOTLIGHT: u32 = 14u;
 
 // Must match `MAX_HEAT` in doom_fire.rs.
 const DOOM_MAX_HEAT: f32 = 36.0;
@@ -685,6 +688,382 @@ fn geological_strata(uv: vec2<f32>) -> vec4<f32> {
     return composite(color, alpha);
 }
 
+// One filament's warm-up and cool-down, in seconds on the effect clock.
+//
+// Tungsten reaches full heat almost instantly and lets go of it slowly. That
+// asymmetry is the entire difference between an incandescent sign and a row of
+// LEDs blinking on a timer, so it is modelled rather than eyeballed.
+fn filament_pulse(period: f32, phase: f32, cooling: f32) -> f32 {
+    let age = fract(uniforms.time / period + phase) * period;
+    let warming = smoothstep(0.0, 0.16, age);
+    return warming * exp(-max(age - 0.16, 0.0) * cooling);
+}
+
+// Where the bulb in `cell` sits inside it. Bulbs set by hand are never on a
+// perfect lattice, and the halo pass needs the same answer as the body pass.
+fn bulb_offset(cell: vec2<f32>) -> vec2<f32> {
+    let jitter = hash21(cell + vec2<f32>(7.3, 1.9));
+    return (vec2<f32>(jitter, fract(jitter * 137.0)) - 0.5) * 0.07;
+}
+
+// Heat, exit overdrive, and remaining life for the bulb in `cell`, returned
+// together because the halo pass needs a neighbour's whole state per sample.
+fn bulb_state(cell: vec2<f32>) -> vec3<f32> {
+    let timing = hash21(cell + vec2<f32>(2.7, 9.1));
+    let slow_phase = fract(timing * 41.0);
+    let quick_phase = fract(timing * 613.0);
+    // Two cycles of unrelated length per bulb. A single period is enough for
+    // the eye to find the loop within a few seconds of watching the sign.
+    let slow = filament_pulse(mix(3.6, 6.4, timing), slow_phase, 1.9);
+    let quick = filament_pulse(mix(2.2, 3.2, 1.0 - timing), quick_phase, 3.1);
+    var heat = max(slow, quick * 0.86);
+
+    // The exit drives every filament past full and then lets it go. Staggering
+    // by a hash makes it a sign flaring up, not one synchronized flash.
+    let stagger = fract(timing * 97.0) * 0.20;
+    let local_exit = clamp(clamp(uniforms.exit_progress, 0.0, 1.0) - stagger, 0.0, 1.0);
+    let surge = smoothstep(0.0, 0.34, local_exit);
+    let overdrive = smoothstep(0.22, 0.60, local_exit);
+    // Short, not a fade: a filament that has run past its limit goes all at
+    // once, and each bulb takes its own moment to do it.
+    let life = 1.0 - smoothstep(0.60, 0.71, local_exit);
+    return vec3<f32>(max(heat, surge), overdrive, life);
+}
+
+// The incandescent ramp: a filament glows dull red before it is bright enough
+// to read as light at all, and only reaches white once it is running hard.
+fn tungsten(heat: f32) -> vec3<f32> {
+    let cold_ember = vec3<f32>(0.42, 0.055, 0.010);
+    let amber = vec3<f32>(1.0, 0.46, 0.090);
+    let warm_white = vec3<f32>(1.0, 0.90, 0.66);
+    let color = mix(cold_ember, amber, smoothstep(0.0, 0.42, heat));
+    return mix(color, warm_white, smoothstep(0.38, 1.0, heat));
+}
+
+fn marquee_bulbs(uv: vec2<f32>) -> vec4<f32> {
+    let aspect = uniforms.resolution.x / uniforms.resolution.y;
+    let exit = clamp(uniforms.exit_progress, 0.0, 1.0);
+    // Cells are square whatever shape the display is, so the bulbs stay round
+    // and the sign reads the same on a 16:10 laptop and a 21:9 projector.
+    let rows = 8.0;
+    let grid = vec2<f32>(uv.x * aspect, uv.y) * rows;
+    let cell = floor(grid);
+    let local = fract(grid) - 0.5;
+    let feather = 1.5 * rows / max(uniforms.resolution.y, 1.0);
+
+    // Light in the air. Every bulb within a cell contributes, which is what
+    // pools warm light on the board between the bulbs instead of leaving each
+    // one a bright disc on flat black.
+    var halo = vec3<f32>(0.0);
+    for (var offset_y = -1; offset_y <= 1; offset_y += 1) {
+        for (var offset_x = -1; offset_x <= 1; offset_x += 1) {
+            let offset = vec2<f32>(f32(offset_x), f32(offset_y));
+            let neighbour = cell + offset;
+            let state = bulb_state(neighbour);
+            let lit = state.x * state.z;
+            let distance_from_bulb = length(local - offset - bulb_offset(neighbour));
+            // The bursting bulbs throw their light further than the waiting
+            // ones, which is what makes the exit feel like a surge.
+            let reach = mix(3.6, 3.0, state.y);
+            // Only the nine nearest bulbs are sampled, so the kernel has to
+            // reach zero inside that window; an exponential alone leaves a
+            // visible square of light around every bulb.
+            let window = 1.0 - smoothstep(0.85, 1.45, distance_from_bulb);
+            let falloff = exp(-distance_from_bulb * reach) * window;
+            halo += tungsten(state.x) * lit * falloff * (0.62 + state.y * 0.9);
+        }
+    }
+
+    let point = local - bulb_offset(cell);
+    let state = bulb_state(cell);
+    let heat = state.x;
+    let overdrive = state.y;
+    let life = state.z;
+
+    // An Edison silhouette: a slightly tall globe seated on a ribbed screw base.
+    let globe_point = vec2<f32>(point.x, (point.y + 0.045) * 0.92);
+    let globe_radius = length(globe_point);
+    let globe = 1.0 - smoothstep(0.255 - feather, 0.255 + feather, globe_radius);
+    let base_shape = (1.0 - smoothstep(0.086, 0.098, abs(point.x)))
+        * smoothstep(0.190, 0.205, point.y)
+        * (1.0 - smoothstep(0.340, 0.356, point.y));
+    let ridges = 0.5 + 0.5 * sin(point.y * 190.0);
+    let brass = mix(vec3<f32>(0.105, 0.078, 0.040), vec3<f32>(0.295, 0.220, 0.112), ridges);
+
+    // A hairpin coil on two support wires, which is the detail that says
+    // "Edison" rather than "round lamp".
+    let coil = point.y + 0.020 - 0.040 * sin(point.x * 68.0 + 1.6);
+    let coil_core = exp(-pow(coil / 0.014, 2.0))
+        * (1.0 - smoothstep(0.108, 0.140, abs(point.x)));
+    let stems = exp(-pow((abs(point.x) - 0.062) / 0.012, 2.0))
+        * smoothstep(-0.010, 0.030, point.y)
+        * (1.0 - smoothstep(0.168, 0.200, point.y));
+    let filament = clamp(coil_core + stems * 0.45, 0.0, 1.0) * globe;
+
+    // Cold glass is not black: it catches the sign's own light from whichever
+    // neighbours happen to be burning.
+    let rim = smoothstep(0.175, 0.255, globe_radius);
+    let glass = vec3<f32>(0.052, 0.047, 0.057) * (0.5 + rim * 1.05) + halo * 0.30;
+    let envelope = globe * (0.28 + 0.72 * (1.0 - globe_radius / 0.255));
+    var emission = tungsten(heat) * heat * envelope * (0.60 + overdrive * 1.1);
+    emission += mix(tungsten(heat), vec3<f32>(1.0, 0.97, 0.90), overdrive)
+        * filament * heat * (2.2 + overdrive * 3.0);
+    emission = emission * life + halo;
+
+    let grain = hash21(floor(uv * uniforms.resolution * 0.5));
+    let vignette = 1.0 - smoothstep(0.30, 1.0, distance(uv, vec2<f32>(0.5)) * 1.35);
+    let board = vec3<f32>(0.024, 0.019, 0.017) * (0.55 + vignette * 0.9)
+        + vec3<f32>(0.006, 0.005, 0.004) * grain;
+    var surface = mix(board, brass * (0.30 + heat * 0.85), base_shape * life);
+    surface = mix(surface, glass, globe * life);
+
+    // The board goes before the bulbs do, so the sign burns on alone for a
+    // moment against the live screen before the last filament lets go.
+    let board_alpha = 1.0 - smoothstep(0.44, 0.80, exit);
+    let glare = clamp(max(emission.r, max(emission.g, emission.b)), 0.0, 1.0);
+    let alpha = max(board_alpha, glare);
+    if alpha <= 0.001 {
+        return vec4<f32>(0.0);
+    }
+    // composite() premultiplies, so the light is divided back out here. That
+    // lets the board fade to nothing underneath without dimming the flare.
+    return composite((surface * board_alpha + emission) / alpha, alpha);
+}
+
+// Distance from `point` to the segment, and how far along it the nearest point
+// lies. Constellation needs both: the lines retract along themselves and the
+// meteor trails taper from head to tail.
+fn segment_probe(point: vec2<f32>, start: vec2<f32>, end: vec2<f32>) -> vec2<f32> {
+    let span = end - start;
+    let travel = clamp(dot(point - start, span) / max(dot(span, span), 1e-6), 0.0, 1.0);
+    return vec2<f32>(length(point - start - span * travel), travel);
+}
+
+// Where the star belonging to `cell` sits, in the same units as the caller's
+// point. Empty cells report themselves through `presence`.
+fn star_position(cell: vec2<f32>, size: f32) -> vec2<f32> {
+    let place = hash21(cell + vec2<f32>(4.1, 12.7));
+    return (cell + vec2<f32>(place, fract(place * 137.0)) * 0.86 + 0.07) * size;
+}
+
+fn constellation(uv: vec2<f32>) -> vec4<f32> {
+    let aspect = uniforms.resolution.x / uniforms.resolution.y;
+    let exit = clamp(uniforms.exit_progress, 0.0, 1.0);
+    let point = vec2<f32>(uv.x * aspect, uv.y);
+    let rows = 11.0;
+    let size = 1.0 / rows;
+
+    // Every meteor in a shower runs from one radiant, and reading that shared
+    // origin is most of why a real shower looks like a shower.
+    let radiant = vec2<f32>(aspect * mix(0.18, 0.82, hash21(vec2<f32>(3.0, 7.0))), -0.62);
+    let lines_gone = smoothstep(0.0, 0.24, exit);
+    let launched = smoothstep(0.16, 1.0, exit);
+    // The exit flings the whole field away from the radiant. Writing that
+    // flight as a scale about that one point is what makes it invertible: a
+    // pixel can ask which star is crossing it, instead of each star having to
+    // find pixels far outside the cell it was born in.
+    let flight = 1.0 + pow(launched, 2.2) * 8.0;
+    // The fraction of the flight a streak covers — the shutter, in effect, so
+    // the trails lengthen as the field accelerates.
+    let smear = 0.12 * smoothstep(0.0, 0.30, launched);
+    // Sample the rest frame under the middle of the streak rather than under
+    // its head, so a trail's whole length stays inside the nine cells read.
+    let rest_point = radiant + (point - radiant) / (flight * (1.0 - smear * 0.5));
+    let cell = floor(rest_point / size);
+    let moving = step(0.001, smear);
+    // Nothing outruns the sky it came from.
+    let spent = 1.0 - smoothstep(0.62, 0.94, launched);
+
+    var light = vec3<f32>(0.0);
+    for (var offset_y = -1; offset_y <= 1; offset_y += 1) {
+        for (var offset_x = -1; offset_x <= 1; offset_x += 1) {
+            let home = cell + vec2<f32>(f32(offset_x), f32(offset_y));
+            let character = hash21(home + vec2<f32>(21.3, 6.8));
+            // Not every cell holds a star; a fully occupied lattice reads as
+            // wallpaper rather than as a sky.
+            let presence = step(0.26, character);
+            // Most stars are faint and a few carry the field, which is roughly
+            // how apparent magnitude is distributed overhead.
+            let magnitude = pow(fract(character * 37.0), 2.6);
+            let twinkle = 0.78
+                + 0.22 * sin(uniforms.time * mix(0.7, 2.3, fract(character * 811.0))
+                    + fract(character * 313.0) * 6.2831853);
+            let brightness = presence * (0.16 + magnitude * 0.84) * twinkle;
+            let tint = mix(
+                vec3<f32>(0.72, 0.82, 1.0),
+                vec3<f32>(1.0, 0.86, 0.68),
+                fract(character * 1097.0),
+            );
+            let rest = star_position(home, size);
+
+            // Radial flight, so the stars overhead barely stir while the ones
+            // out at the edges tear past — the geometry does the work that a
+            // per-star speed would otherwise have to fake.
+            let ray = rest - radiant;
+            let head = radiant + ray * flight;
+            let tail = radiant + ray * flight * (1.0 - smear);
+            let streak = segment_probe(point, tail, head);
+
+            let core = exp(-streak.x * mix(220.0, 90.0, magnitude));
+            let bloom = exp(-streak.x * 34.0) * 0.16;
+            // Four-point diffraction, the way a bright star reads through a
+            // lens. Only the bright ones earn it.
+            let delta = point - head;
+            let spikes = (exp(-abs(delta.x) * 520.0) + exp(-abs(delta.y) * 520.0))
+                * exp(-length(delta) * 90.0)
+                * smoothstep(0.45, 1.0, magnitude)
+                * 0.5;
+            // The trail is brightest at the head and dies out behind it.
+            let taper = mix(1.0, 0.06 + 0.94 * streak.y * streak.y, moving);
+            light += tint * brightness * (core + bloom + spikes) * taper * spent;
+
+            // A line to one neighbour, drawn only where both ends exist. Chains
+            // of these read as asterisms without anyone naming them.
+            let partner = home + select(
+                vec2<f32>(1.0, 0.0),
+                vec2<f32>(f32(offset_x >= 0) * 2.0 - 1.0, 1.0),
+                fract(character * 149.0) > 0.5,
+            );
+            let linked = step(0.72, fract(character * 271.0))
+                * step(0.26, hash21(partner + vec2<f32>(21.3, 6.8)))
+                * presence
+                * (1.0 - lines_gone)
+                * (1.0 - moving);
+            let line = segment_probe(point, rest, star_position(partner, size));
+            let drawn = exp(-line.x * 620.0) * step(line.y, 1.0 - lines_gone * 0.9);
+            light += vec3<f32>(0.42, 0.52, 0.78) * drawn * linked * 0.32;
+        }
+    }
+
+    // A dark sky with one dusty band across it, so the field has somewhere to
+    // be sparse without looking empty.
+    let band_axis = point.x * 0.42 + point.y * 0.91;
+    let band = exp(-pow((band_axis - 0.86) / 0.34, 2.0));
+    let dust = value_noise(point * vec2<f32>(5.0, 7.0) + vec2<f32>(1.7, 0.4));
+    let horizon = smoothstep(0.0, 1.4, uv.y);
+    var sky = mix(vec3<f32>(0.011, 0.013, 0.032), vec3<f32>(0.020, 0.017, 0.044), horizon);
+    sky += vec3<f32>(0.036, 0.038, 0.058) * band * (0.30 + dust * 0.70);
+
+    // The night itself is swept off the screen behind the shower, spreading
+    // out from the radiant the meteors came from.
+    let far = max(
+        max(distance(radiant, vec2<f32>(0.0, 0.0)), distance(radiant, vec2<f32>(aspect, 0.0))),
+        max(distance(radiant, vec2<f32>(0.0, 1.0)), distance(radiant, vec2<f32>(aspect, 1.0))),
+    );
+    let front = ease_in_out_cubic(smoothstep(0.46, 1.0, exit)) * (far + 0.30);
+    let sky_alpha = smoothstep(front - 0.30, front, distance(point, radiant));
+
+    let glare = clamp(max(light.r, max(light.g, light.b)), 0.0, 1.0);
+    let alpha = max(sky_alpha, glare * (1.0 - smoothstep(0.90, 1.0, exit)));
+    if alpha <= 0.001 {
+        return vec4<f32>(0.0);
+    }
+    // Premultiplied downstream, so dividing here lets the last meteors keep
+    // burning across the screen the wipe has already given back.
+    return composite((sky * sky_alpha + light) / alpha, alpha);
+}
+
+fn spotlight(uv: vec2<f32>) -> vec4<f32> {
+    let aspect = uniforms.resolution.x / uniforms.resolution.y;
+    let exit = clamp(uniforms.exit_progress, 0.0, 1.0);
+    let point = vec2<f32>(uv.x * aspect, uv.y);
+
+    // A slow search, seeded so the light is not found in the same place twice.
+    // The drift keeps running through the exit: over a 1.6 second dismissal it
+    // moves the pool by a few hundredths of a screen, which is why no machinery
+    // for settling it exists here.
+    let drift = seed_phase();
+    let center = vec2<f32>(
+        aspect * (0.5 + 0.19 * sin(uniforms.time * 0.21 + drift)),
+        0.55 + 0.12 * sin(uniforms.time * 0.147 + drift * 1.7),
+    );
+    // Squashed vertically: a beam meeting the stage at an angle throws an
+    // ellipse, never a circle.
+    let radial = length((point - center) * vec2<f32>(1.0, 1.18));
+
+    // The flood has to reach the farthest corner from wherever the light
+    // happens to be standing, which is the whole reason this does not read as
+    // Projector Iris.
+    let corner_reach = max(
+        max(distance(center, vec2<f32>(0.0, 0.0)), distance(center, vec2<f32>(aspect, 0.0))),
+        max(distance(center, vec2<f32>(0.0, 1.0)), distance(center, vec2<f32>(aspect, 1.0))),
+    );
+    let full_reach = corner_reach * 1.10;
+    let radius = mix(0.185, full_reach, ease_in_out_cubic(exit));
+    // The screen returns *behind* the light rather than inside it: the reveal
+    // trails the pool's edge by a gap that closes as the wave leaves the
+    // screen. What crosses the display is a bright ring, not a hole opening in
+    // a bright disc — which is what this looked like when the reveal was
+    // concentric with the pool instead of chasing it.
+    // The gap closes early, so the frames where the opening is still a small
+    // shape surrounded by light pass quickly; that is the eclipse-looking part
+    // of a centre-out reveal and there is no geometry that avoids it entirely.
+    let trail = 0.42 * (1.0 - smoothstep(0.20, 0.75, exit));
+    let reveal_radius = max(radius - trail, 0.0);
+    // A wide, soft trailing edge with an irregular rim, so the dark is eaten
+    // away rather than punched out. A clean ellipse reads as a hole.
+    // Harmonics of the bearing rather than sampled noise: a value-noise lattice
+    // read around a circle leaves visible facets on a boundary this large.
+    let bearing = atan2(point.y - center.y, point.x - center.x);
+    let rim = sin(bearing * 3.0 + seed_phase()) * 0.55
+        + sin(bearing * 5.0 - seed_phase() * 1.7) * 0.30
+        + sin(bearing * 8.0 + 1.1) * 0.15;
+    let eaten = radial * (1.0 + rim * 0.065);
+    let feather = mix(0.12, 0.42, clamp(reveal_radius / full_reach, 0.0, 1.0));
+    let opened = select(
+        0.0,
+        1.0 - smoothstep(max(reveal_radius - feather, 0.0), reveal_radius, eaten),
+        reveal_radius > 0.001,
+    );
+
+    // A few percent of arc flicker. A perfectly steady stage light reads as a
+    // rendered circle rather than as a lamp.
+    let arc = 0.962 + 0.038 * sin(uniforms.time * 11.3 + sin(uniforms.time * 3.1) * 1.7);
+    let pool = 1.0 - smoothstep(radius * 0.52, radius, radial);
+    let core = 1.0 - smoothstep(0.0, radius * 0.64, radial);
+    let spill = exp(-max(radial - radius, 0.0) * 8.5);
+
+    // The lamp hangs in a fixed position above the proscenium, so the beam
+    // swings as the pool searches — the way a follow-spot actually behaves.
+    let lamp = vec2<f32>(aspect * 0.34, -0.52);
+    let lamp_to_pool = center - lamp;
+    let span = max(length(lamp_to_pool), 0.001);
+    let axis = lamp_to_pool / span;
+    let along = dot(point - lamp, axis);
+    let across = length(point - lamp - axis * along);
+    let reach = clamp(along / span, 0.0, 1.0);
+    let cone_width = mix(0.016, radius * 0.94, reach);
+    var beam = (1.0 - smoothstep(cone_width * 0.30, cone_width, across))
+        * step(0.0, along)
+        * (1.0 - smoothstep(span * 0.97, span * 1.15, along));
+    // A shaft is only visible because there is dust in it.
+    let haze_drift = vec2<f32>(uniforms.time * 0.045, uniforms.time * -0.09);
+    let haze = value_noise(point * vec2<f32>(6.5, 4.5) + haze_drift);
+    let motes = value_noise(point * 17.0 - haze_drift * 2.3);
+    beam *= (0.45 + haze * 0.60 + motes * 0.20) * mix(1.0, 0.42, reach);
+
+    let lamp_core = vec3<f32>(1.0, 0.953, 0.863);
+    let warm_throw = vec3<f32>(1.0, 0.843, 0.604);
+    let grain = hash21(floor(uv * uniforms.resolution * 0.5));
+    let vignette = 1.0 - smoothstep(0.25, 1.15, distance(uv, vec2<f32>(0.5)) * 1.25);
+    let stage = vec3<f32>(0.020, 0.020, 0.027) * (0.55 + vignette * 0.85)
+        + vec3<f32>(0.005, 0.005, 0.006) * grain;
+
+    var light = mix(warm_throw, lamp_core, core * 0.70) * (pool * 0.92 + core * 0.30) * arc;
+    light += warm_throw * beam * 0.20 * arc;
+    light += warm_throw * spill * (1.0 - pool) * 0.11;
+
+    // The light lives on the stage, so it leaves with it. No premultiplied
+    // rescue is needed here: a pixel the reveal has already opened has nothing
+    // left to be lit.
+    // The last of it clears unconditionally, so no corner outruns the wave.
+    let alpha = (1.0 - opened) * (1.0 - smoothstep(0.88, 1.0, exit));
+    if alpha <= 0.001 {
+        return vec4<f32>(0.0);
+    }
+    return composite(stage + light, alpha);
+}
+
 @fragment
 fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let uv = input.position.xy / uniforms.resolution;
@@ -702,6 +1081,9 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
         case EFFECT_GEOLOGICAL_STRATA: { return geological_strata(uv); }
         case EFFECT_FROSTED_GLASS: { return frosted_glass(uv); }
         case EFFECT_CRT_SHUTDOWN: { return crt_shutdown(uv); }
+        case EFFECT_MARQUEE_BULBS: { return marquee_bulbs(uv); }
+        case EFFECT_CONSTELLATION: { return constellation(uv); }
+        case EFFECT_SPOTLIGHT: { return spotlight(uv); }
         // An unknown id draws nothing rather than an arbitrary effect. A
         // transparent overlay is a recoverable bug; the wrong flourish on
         // stage is not.

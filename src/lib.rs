@@ -82,6 +82,8 @@ macro_rules! flourish_catalog {
 
 flourish_catalog! {
     Curtain          { slug: "curtain",           label: "Curtain",           shader_id: 0,  exit_ms: 1_800, },
+    MarqueeBulbs     { slug: "marquee-bulbs",     label: "Marquee Bulbs",     shader_id: 12, exit_ms: 1_700, },
+    Spotlight        { slug: "spotlight",         label: "Spotlight",         shader_id: 14, exit_ms: 1_600, },
     ProjectorIris    { slug: "projector-iris",    label: "Projector Iris",    shader_id: 8,  exit_ms: 1_800, },
     GeologicalStrata { slug: "geological-strata", label: "Geological Strata", shader_id: 9,  exit_ms: 1_900, },
     FrostedGlass     { slug: "frosted-glass",     label: "Frosted Glass",     shader_id: 10, exit_ms: 1_700, },
@@ -90,6 +92,7 @@ flourish_catalog! {
     Fire             { slug: "fire",              label: "Fire",              shader_id: 2,  exit_ms: 1_600, },
     DoomFire         { slug: "doom-fire",         label: "Doom Fire",         shader_id: 6,  exit_ms: 1_800, },
     GravelFall       { slug: "gravel-fall",       label: "Gravel Fall",       shader_id: 7,  exit_ms: 1_800, },
+    Constellation    { slug: "constellation",     label: "Constellation",     shader_id: 13, exit_ms: 2_000, },
     Blackout         { slug: "blackout",          label: "Blackout",          shader_id: 3,  exit_ms: 1_200, },
     Kaleidoscope     { slug: "kaleidoscope",      label: "Kaleidoscope",      shader_id: 4,  exit_ms: 1_500, },
     Mosaic           { slug: "mosaic",            label: "Mosaic",            shader_id: 5,  exit_ms: 1_500, },
