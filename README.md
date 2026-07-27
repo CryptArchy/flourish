@@ -22,6 +22,7 @@ talk does not replay the same picture.
 | Spotlight | A warm follow-spot searches a dark stage through its own dusty beam | The pool floods outward and the screen returns behind the light |
 | Projector Iris | Soot-black overlapping blades hold around a tungsten pinhole | The mechanical aperture spirals open |
 | Geological Strata | Textured sediment bands form a dramatic road cut | A crooked fault opens and both land masses shear away |
+| Paper Tear | A fibrous cream sheet covers the screen | A ragged tear runs down from the top and both halves curl away |
 | Frosted Glass | Dendritic ice creeps over a translucent pane | Irregular warm fronts melt through the frost |
 | CRT Shutdown | Phosphor scanlines and restrained analog noise fill a dark tube | The image collapses to a line, contracts to a dot, and blinks out |
 | Pond Ripples | Independent concentric ripples cross a calm surface | Dissipates in place |
@@ -115,7 +116,7 @@ menu.
 This repository contains an expanded macOS vertical slice:
 
 - Native Rust shell using `winit`, `wgpu`, and `tray-icon`
-- Menu-bar-only idle state with fifteen Flourishes and Quit actions
+- Menu-bar-only idle state with sixteen Flourishes and Quit actions
 - Global shortcut for summoning and dismissing from inside a full-screen deck
 - Flourishes target the display the pointer is on, across mixed-DPI layouts
 - Celebratory party-popper template icon on macOS, with color on other trays

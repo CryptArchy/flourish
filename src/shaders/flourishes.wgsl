@@ -29,6 +29,7 @@ const EFFECT_CRT_SHUTDOWN: u32 = 11u;
 const EFFECT_MARQUEE_BULBS: u32 = 12u;
 const EFFECT_CONSTELLATION: u32 = 13u;
 const EFFECT_SPOTLIGHT: u32 = 14u;
+const EFFECT_PAPER_TEAR: u32 = 15u;
 
 // Must match `MAX_HEAT` in doom_fire.rs.
 const DOOM_MAX_HEAT: f32 = 36.0;
@@ -1064,6 +1065,208 @@ fn spotlight(uv: vec2<f32>) -> vec4<f32> {
     return composite(stage + light, alpha);
 }
 
+// The tear is split into two scales, because they do different jobs.
+//
+// `tear_axis` is where the sheet comes apart at large scale, and it also
+// carries the curl: a cylinder needs a reasonably straight axis, and driving it
+// with the full ragged edge makes the roll wobble sideways by as much as it is
+// wide, which reads as a lumpy ribbon rather than as a rolled edge.
+fn tear_axis(y: f32) -> f32 {
+    return 0.5 + (value_noise(vec2<f32>(y * 3.1, 11.7)) - 0.5) * 0.090;
+}
+
+// `tear_rag` is the kinks and fibre-scale roughness on top of it. It is applied
+// as a difference in how much paper each row has, so it ends up as raggedness
+// in how far that row has wrapped — the torn edge stays ragged while the roll
+// it sits on stays straight.
+fn tear_rag(y: f32) -> f32 {
+    let kink = (value_noise(vec2<f32>(y * 13.0, 4.2)) - 0.5) * 0.034;
+    let fibre = (value_noise(vec2<f32>(y * 61.0, 27.3)) - 0.5) * 0.012;
+    return kink + fibre;
+}
+
+// Sampled in sheet coordinates, never screen coordinates: the grain has to
+// travel with the paper and compress into the roll, or the sheet reads as a
+// gradient sliding under a static texture.
+fn paper_surface(sheet: vec2<f32>) -> vec3<f32> {
+    let stock = vec3<f32>(0.941, 0.918, 0.851);
+    let mottle = value_noise(sheet * vec2<f32>(3.4, 3.0) + vec2<f32>(2.7, 8.1));
+    let cloud = value_noise(sheet * vec2<f32>(9.0, 8.2) + vec2<f32>(5.3, 1.4));
+    // Fibres lying in the pulp, in both directions. One direction alone reads
+    // as brushed metal rather than as paper.
+    // Kept mildly anisotropic and sparse. Strongly stretched noise lays down a
+    // lattice of rectangles, and two of them crossing reads as woven linen.
+    let along = value_noise(sheet * vec2<f32>(150.0, 26.0) + vec2<f32>(0.7, 3.9));
+    let across = value_noise(sheet * vec2<f32>(24.0, 190.0) + vec2<f32>(5.1, 0.3));
+    let tooth = hash21(floor(sheet * 900.0));
+    var color = stock * (0.930 + mottle * 0.080 + cloud * 0.045);
+    color -= vec3<f32>(0.022, 0.023, 0.026) * smoothstep(0.79, 1.0, along);
+    color -= vec3<f32>(0.016, 0.017, 0.020) * smoothstep(0.82, 1.0, across);
+    color += vec3<f32>(0.016) * (tooth - 0.5);
+    return color;
+}
+
+fn paper_tear(uv: vec2<f32>) -> vec4<f32> {
+    let exit = clamp(uniforms.exit_progress, 0.0, 1.0);
+    let pi = 3.14159265;
+
+    // The crack runs top to bottom over the first third. Rows it has not
+    // reached are still joined, which is what makes this a tear rather than
+    // two panels sliding apart.
+    // Overshoots 1.0 by more than the smoothstep below is wide, or the last
+    // rows never reach full separation and the sheet keeps a joined band along
+    // the bottom edge for the whole exit.
+    let crack_front = ease_in_out_cubic(clamp(exit / 0.34, 0.0, 1.0)) * 1.25;
+    let row_open = smoothstep(0.0, 0.11, crack_front - uv.y);
+    // Rows that have been open longer are further apart, so the tear is a V
+    // rather than a parallel gap — the halves swing from the bottom the way
+    // torn paper does. The wedge is constant in time and sized so even the
+    // slowest row clears the screen: equalizing it late made the bottom catch
+    // up as a separate second motion, which reads as two sheets tearing at
+    // different times rather than as one sheet coming apart.
+    let opened_for = clamp((crack_front - uv.y) / 0.62, 0.0, 1.0);
+    let wedge = mix(0.76, 1.0, opened_for);
+    // Sized so the slowest row's roll leaves the screen just before the exit
+    // ends. It is smaller than it looks: rolling up consumes paper, so the
+    // curl below pulls each tangent back by its own arc length on top of this.
+    let pull = 0.55 * pow(clamp((exit - 0.05) / 0.95, 0.0, 1.0), 1.35) * row_open * wedge;
+    // The halves sag as they go. Without it they read as two rectangles.
+    let sag = pull * pull * 0.10;
+
+    let sheet_y = uv.y - sag;
+    let axis = tear_axis(sheet_y);
+    let rag = tear_rag(sheet_y);
+    let split = axis + rag;
+
+    // The curl. The paper leaves the flat plane at a tangent point, wraps a
+    // cylinder of this radius through `wrap` radians, and ends at the torn
+    // edge. Past a quarter turn the wrapped paper comes back over the sheet and
+    // what the viewer sees is its *back face*, lying on top of the paper it
+    // came from — that flap is what reads as a curl.
+    //
+    // A cylinder that rolls the other way, away from the viewer, shows only its
+    // front: a flat bright band beside a flat bright sheet, divided by a seam.
+    // That is two stacked sheets, not a curl, and no amount of shading fixes it.
+    let curl_radius = 0.058;
+    // Front-loaded, on a curve that leaves its slow part for the end. Below a
+    // half turn the flap is only a crescent a few pixels wide at the outer
+    // edge; the curl does not read until the paper comes back over the sheet,
+    // so any time spent under that is time spent looking like nothing.
+    //
+    // No separation gate is needed: a tangent recedes by its own arc length, so
+    // the two rolls hold each other apart faster than they widen.
+    let wrap = 4.4 * pow(clamp((exit - 0.08) / 0.44, 0.0, 1.0), 0.7) * row_open;
+    // Where the row's raggedness lives. On flat paper it is simply where the
+    // edge is. Once the paper is well curled it has to move into how far that
+    // row has *wrapped*, or it drags the roll's axis sideways with it. Anything
+    // in between blends, because forcing rag into the wrap while the sheet is
+    // still flat invents a curl on a sheet that has not curled — which draws a
+    // ragged ghost line down the held sheet.
+    let curl_share = smoothstep(0.0, 1.5707963, wrap);
+    let side = select(-1.0, 1.0, uv.x >= split);
+    let tangent = axis + side * (pull + curl_radius * wrap) + rag * (1.0 - curl_share);
+    let q = -side * (uv.x - tangent);
+    let wrap_row = wrap - side * rag * curl_share / curl_radius;
+
+    // Three surfaces can be over this pixel: the flap (the cylinder's outer
+    // half, the paper's back), the inside of the curl (its front face, looking
+    // into the opening), and the flat sheet. The flap is nearest the viewer
+    // wherever it reaches, so it is tested first.
+    let flap_inner = curl_radius * sin(wrap_row);
+    var region = 3u;
+    var phi = 0.0;
+    if wrap_row <= 0.0 {
+        // This row carries less paper than the roll's line, so it simply ends
+        // short of the tangent rather than curling at all.
+        if q <= curl_radius * wrap_row {
+            region = 0u;
+        }
+    } else if q > curl_radius {
+        region = 3u;
+    } else if wrap_row >= 1.5707963 && q >= flap_inner {
+        region = 1u;
+        phi = pi - asin(clamp(q / curl_radius, -1.0, 1.0));
+    } else if q >= 0.0 {
+        phi = asin(clamp(q / curl_radius, -1.0, 1.0));
+        if phi <= wrap_row {
+            region = 2u;
+        } else {
+            region = 3u;
+        }
+    } else {
+        region = 0u;
+    }
+
+    if region != 3u {
+        // Flat paper is rigid and simply translated, whatever its edge is
+        // doing. Curled paper is addressed by arc length around the roll, and
+        // lands in the same sheet coordinate, so the grain runs continuously
+        // off the sheet and around the curl.
+        var sheet_x = uv.x - side * pull;
+        if region != 0u {
+            sheet_x = split + side * curl_radius * (wrap_row - phi);
+        }
+        // The sheet is larger than the screen on every side, so neither the sag
+        // nor the curl's offset can pull an outer edge into frame.
+        if sheet_x >= -0.35 && sheet_x <= 1.35 {
+            var color = paper_surface(vec2<f32>(sheet_x, sheet_y));
+            // Lighting belongs to the room, not to the sheet, so it is sampled
+            // in screen space: the paper travels through it.
+            let sweep = value_noise(vec2<f32>(uv.x * 1.7 + uniforms.time * 0.035, uv.y * 1.5));
+            let vignette = 1.0
+                - 0.075 * smoothstep(0.28, 1.0, distance(uv, vec2<f32>(0.5)) * 1.3);
+            color *= (0.955 + sweep * 0.090) * vignette;
+
+            // One light, upper-left and in front of the sheet, in the plane
+            // across the curl. Flat paper faces the viewer squarely.
+            let light = vec2<f32>(-0.50, 0.87);
+            var lit = light.y;
+            if region == 1u {
+                // The flap: outer surface of the cylinder, so its normal sweeps
+                // a full half turn and the shading with it. `q` runs the other
+                // way on the right half, so the normal's world x carries -side;
+                // without it both rolls light identically and the halves read
+                // as two separately lit sheets again.
+                lit = max(dot(vec2<f32>(-side * sin(phi), -cos(phi)), light), 0.0);
+            } else if region == 2u {
+                // Inside the curl, and increasingly buried by the paper above.
+                lit = max(dot(vec2<f32>(side * sin(phi), cos(phi)), light), 0.0)
+                    * mix(1.0, 0.28, clamp(phi / 1.5707963, 0.0, 1.0));
+            } else if wrap_row >= 1.5707963 {
+                // Flat, and lying under the flap's edge.
+                lit *= 1.0 - 0.40 * exp(-max(flap_inner - q, 0.0) * 55.0);
+            }
+            color *= 0.20 + 0.92 * lit;
+            // The back of a sheet is the side that was never printed on.
+            if region == 1u {
+                color *= vec3<f32>(0.955, 0.935, 0.885);
+            }
+            return composite(color, 1.0);
+        }
+    }
+
+    // No paper here, but the sheet has height above whatever is underneath it.
+    // This shadow is the only cue that says so.
+    // The gap runs between the two rolls' outer silhouettes, not between the
+    // torn edges: the flaps stand proud of their tangents by a radius.
+    let left_edge = axis - (pull + curl_radius * wrap) + rag * (1.0 - curl_share) + curl_radius;
+    let right_edge = axis + (pull + curl_radius * wrap) + rag * (1.0 - curl_share) - curl_radius;
+    let in_gap = step(left_edge, uv.x) * step(uv.x, right_edge) * row_open;
+    // Thrown by the left half, because that is where the light is. Both edges
+    // additionally get a tight contact darkening, which is occlusion rather
+    // than a cast shadow and so does have a side on both.
+    let thrown = exp(-max(uv.x - left_edge, 0.0) * 20.0);
+    let contact = max(
+        exp(-max(uv.x - left_edge, 0.0) * 70.0),
+        exp(-max(right_edge - uv.x, 0.0) * 70.0),
+    );
+    let alpha = clamp((thrown * 0.34 + contact * 0.16) * in_gap, 0.0, 1.0);
+    if alpha <= 0.001 {
+        return vec4<f32>(0.0);
+    }
+    return composite(vec3<f32>(0.035, 0.032, 0.028), alpha);
+}
+
 @fragment
 fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let uv = input.position.xy / uniforms.resolution;
@@ -1084,6 +1287,7 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
         case EFFECT_MARQUEE_BULBS: { return marquee_bulbs(uv); }
         case EFFECT_CONSTELLATION: { return constellation(uv); }
         case EFFECT_SPOTLIGHT: { return spotlight(uv); }
+        case EFFECT_PAPER_TEAR: { return paper_tear(uv); }
         // An unknown id draws nothing rather than an arbitrary effect. A
         // transparent overlay is a recoverable bug; the wrong flourish on
         // stage is not.

@@ -86,6 +86,7 @@ flourish_catalog! {
     Spotlight        { slug: "spotlight",         label: "Spotlight",         shader_id: 14, exit_ms: 1_600, },
     ProjectorIris    { slug: "projector-iris",    label: "Projector Iris",    shader_id: 8,  exit_ms: 1_800, },
     GeologicalStrata { slug: "geological-strata", label: "Geological Strata", shader_id: 9,  exit_ms: 1_900, },
+    PaperTear        { slug: "paper-tear",        label: "Paper Tear",        shader_id: 15, exit_ms: 1_900, },
     FrostedGlass     { slug: "frosted-glass",     label: "Frosted Glass",     shader_id: 10, exit_ms: 1_700, },
     CrtShutdown      { slug: "crt-shutdown",      label: "CRT Shutdown",      shader_id: 11, exit_ms: 1_300, },
     PondRipples      { slug: "pond-ripples",      label: "Pond Ripples",      shader_id: 1,  exit_ms: 1_400, },
