@@ -30,6 +30,7 @@ const EFFECT_MARQUEE_BULBS: u32 = 12u;
 const EFFECT_CONSTELLATION: u32 = 13u;
 const EFFECT_SPOTLIGHT: u32 = 14u;
 const EFFECT_PAPER_TEAR: u32 = 15u;
+const EFFECT_ELEVATOR_DOORS: u32 = 16u;
 
 // Must match `MAX_HEAT` in doom_fire.rs.
 const DOOM_MAX_HEAT: f32 = 36.0;
@@ -1267,6 +1268,89 @@ fn paper_tear(uv: vec2<f32>) -> vec4<f32> {
     return composite(vec3<f32>(0.035, 0.032, 0.028), alpha);
 }
 
+// Brushed steel. Sampled in panel coordinates by its caller, so the grain
+// travels with the door it belongs to; sampling it in screen space shears the
+// metal as the door slides.
+fn brushed_steel(panel: vec2<f32>) -> f32 {
+    let fine = value_noise(vec2<f32>(panel.x * 640.0, panel.y * 2.2));
+    let coarse = value_noise(vec2<f32>(panel.x * 98.0, panel.y * 1.3));
+    let flecks = hash21(floor(vec2<f32>(panel.x * 900.0, panel.y * 44.0)));
+    return clamp(
+        0.5 + (fine - 0.5) * 0.58 + (coarse - 0.5) * 0.34 + (flecks - 0.5) * 0.10,
+        0.0,
+        1.0,
+    );
+}
+
+fn elevator_doors(uv: vec2<f32>) -> vec4<f32> {
+    let aspect = uniforms.resolution.x / uniforms.resolution.y;
+    let exit = clamp(uniforms.exit_progress, 0.0, 1.0);
+
+    // Machinery: a moment under load before anything moves, then driven, with
+    // no easing at the end. A door that eases out of its travel looks placed
+    // rather than driven, which is the difference between this and a curtain.
+    let travel = 0.56 * pow(clamp((exit - 0.085) / 0.915, 0.0, 1.0), 1.45);
+    let strain = 1.0 - smoothstep(0.0, 0.085, exit);
+
+    let left_edge = 0.5 - travel;
+    let right_edge = 0.5 + travel;
+    let on_left = uv.x <= left_edge;
+    let on_right = uv.x >= right_edge;
+
+    if on_left || on_right {
+        let side = select(-1.0, 1.0, on_right);
+        // The panel coordinate follows the door; the world coordinate does not.
+        let panel = vec2<f32>((uv.x - side * travel) * aspect, uv.y);
+        let world = vec2<f32>(uv.x * aspect, uv.y);
+        let grain = brushed_steel(panel);
+
+        // A flat mirror sliding within its own plane leaves the room it is
+        // reflecting exactly where it was — the reflection does not travel with
+        // the door, the door travels under it. Two coordinate systems, no extra
+        // samples, and most of the difference between this and two grey panels.
+        let drift = uniforms.time * 0.05 + seed_phase();
+        let bands = 0.5
+            + 0.26 * sin((world.x * 0.9 - world.y * 1.5) * 2.4 + drift)
+            + 0.20 * sin((world.x * 1.7 + world.y * 0.8) * 1.5 - drift * 0.7);
+        let fitting = world.x * 0.75 + world.y * 0.55 - 0.62 - sin(drift * 0.6) * 0.22;
+        let sweep = exp(-pow(fitting / 0.17, 2.0));
+        // Brushing smears a reflection along the grain instead of mirroring it,
+        // so the bands are modulated by the striations rather than laid over.
+        let smeared = mix(bands, bands * (0.55 + grain * 0.80), 0.68);
+
+        let steel = vec3<f32>(0.541, 0.565, 0.600);
+        let bright = vec3<f32>(0.776, 0.800, 0.827);
+        let shadowed = vec3<f32>(0.306, 0.329, 0.361);
+        var color = mix(shadowed, steel, clamp(0.34 + smeared * 0.92, 0.0, 1.0));
+        color = mix(color, bright, clamp(sweep, 0.0, 1.0) * 0.55);
+        // The room above the doors is brighter than the floor in front of them.
+        color *= 0.86 + 0.26 * (1.0 - uv.y);
+
+        // The leading edge is a machined lip with a chamfer that catches light.
+        // At rest the two lips together are the seam.
+        let inner = select(left_edge - uv.x, uv.x - right_edge, on_right);
+        let chamfer = 1.0 - smoothstep(0.0, 0.011, inner);
+        color = mix(color, bright, chamfer * 0.42);
+        let lip = 1.0 - smoothstep(0.0, 0.0024, inner);
+        color = mix(color, vec3<f32>(0.078, 0.090, 0.102), lip * 0.88);
+        // Taking up the slack presses the seam shut before the drive starts.
+        color *= 1.0 - 0.20 * strain * (1.0 - smoothstep(0.0, 0.016, inner));
+        return composite(color, 1.0);
+    }
+
+    // Between the doors: no metal, but they are thick panels standing in front
+    // of whatever they have opened onto.
+    let shadow = max(
+        exp(-max(uv.x - left_edge, 0.0) * 42.0),
+        exp(-max(right_edge - uv.x, 0.0) * 42.0),
+    );
+    let alpha = clamp(shadow * 0.46, 0.0, 1.0);
+    if alpha <= 0.001 {
+        return vec4<f32>(0.0);
+    }
+    return composite(vec3<f32>(0.031, 0.035, 0.041), alpha);
+}
+
 @fragment
 fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let uv = input.position.xy / uniforms.resolution;
@@ -1288,6 +1372,7 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
         case EFFECT_CONSTELLATION: { return constellation(uv); }
         case EFFECT_SPOTLIGHT: { return spotlight(uv); }
         case EFFECT_PAPER_TEAR: { return paper_tear(uv); }
+        case EFFECT_ELEVATOR_DOORS: { return elevator_doors(uv); }
         // An unknown id draws nothing rather than an arbitrary effect. A
         // transparent overlay is a recoverable bug; the wrong flourish on
         // stage is not.

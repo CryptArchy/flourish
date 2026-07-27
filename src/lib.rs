@@ -85,6 +85,7 @@ flourish_catalog! {
     MarqueeBulbs     { slug: "marquee-bulbs",     label: "Marquee Bulbs",     shader_id: 12, exit_ms: 1_700, },
     Spotlight        { slug: "spotlight",         label: "Spotlight",         shader_id: 14, exit_ms: 1_600, },
     ProjectorIris    { slug: "projector-iris",    label: "Projector Iris",    shader_id: 8,  exit_ms: 1_800, },
+    ElevatorDoors    { slug: "elevator-doors",    label: "Elevator Doors",    shader_id: 16, exit_ms: 1_600, },
     GeologicalStrata { slug: "geological-strata", label: "Geological Strata", shader_id: 9,  exit_ms: 1_900, },
     PaperTear        { slug: "paper-tear",        label: "Paper Tear",        shader_id: 15, exit_ms: 1_900, },
     FrostedGlass     { slug: "frosted-glass",     label: "Frosted Glass",     shader_id: 10, exit_ms: 1_700, },
