@@ -83,6 +83,7 @@ macro_rules! flourish_catalog {
 
 flourish_catalog! {
     Curtain          { slug: "curtain",           label: "Curtain",           shader_id: 0,  exit_ms: 1_800, },
+    Confetti         { slug: "confetti",          label: "Confetti",          shader_id: 17, exit_ms: 1_500, },
     MarqueeBulbs     { slug: "marquee-bulbs",     label: "Marquee Bulbs",     shader_id: 12, exit_ms: 1_700, },
     Spotlight        { slug: "spotlight",         label: "Spotlight",         shader_id: 14, exit_ms: 1_600, },
     ProjectorIris    { slug: "projector-iris",    label: "Projector Iris",    shader_id: 8,  exit_ms: 1_800, },

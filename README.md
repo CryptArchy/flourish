@@ -18,6 +18,7 @@ talk does not replay the same picture.
 | Flourish | While it waits | Graceful exit |
 | --- | --- | --- |
 | Curtain | Lit velvet subtly rustles | Draws open from the center |
+| Confetti | Foil tumbles down over whatever is on screen | The source stops and the last of it falls away |
 | Marquee Bulbs | Edison bulbs warm and cool at their own pace | Every filament runs past full, then they pop out one by one |
 | Spotlight | A warm follow-spot searches a dark stage through its own dusty beam | The pool floods outward and the screen returns behind the light |
 | Projector Iris | Soot-black overlapping blades hold around a tungsten pinhole | The mechanical aperture spirals open |
@@ -37,7 +38,7 @@ talk does not replay the same picture.
 
 ## Surprise Me
 
-With seventeen effects, picking one from a menu mid-sentence is its own kind of
+With eighteen effects, picking one from a menu mid-sentence is its own kind of
 friction. **Surprise Me** is the first item in the menu, and it sticks: once
 chosen, the global shortcut draws a different flourish every press, never
 repeating the one just played. Choose a named effect instead and the shortcut
@@ -102,7 +103,7 @@ machines are in
 
 ## Choosing one without playing it
 
-Deciding which flourish suits a talk should not mean launching seventeen of them
+Deciding which flourish suits a talk should not mean launching eighteen of them
 full-screen:
 
 ```sh
@@ -144,7 +145,7 @@ menu.
 This repository contains an expanded macOS vertical slice:
 
 - Native Rust shell using `winit`, `wgpu`, and `tray-icon`
-- Menu-bar-only idle state with seventeen Flourishes, Surprise Me, and Quit
+- Menu-bar-only idle state with eighteen Flourishes, Surprise Me, and Quit
 - Global shortcut for summoning and dismissing from inside a full-screen deck
 - Flourishes target the display the pointer is on, across mixed-DPI layouts
 - Celebratory party-popper template icon on macOS, with color on other trays

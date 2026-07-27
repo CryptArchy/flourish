@@ -31,6 +31,7 @@ const EFFECT_CONSTELLATION: u32 = 13u;
 const EFFECT_SPOTLIGHT: u32 = 14u;
 const EFFECT_PAPER_TEAR: u32 = 15u;
 const EFFECT_ELEVATOR_DOORS: u32 = 16u;
+const EFFECT_CONFETTI: u32 = 17u;
 
 // Must match `MAX_HEAT` in doom_fire.rs.
 const DOOM_MAX_HEAT: f32 = 36.0;
@@ -1351,6 +1352,122 @@ fn elevator_doors(uv: vec2<f32>) -> vec4<f32> {
     return composite(vec3<f32>(0.031, 0.035, 0.041), alpha);
 }
 
+// A festive palette, and the duller reverse a piece shows once it has tumbled
+// past edge-on. Foil is printed on one side only.
+fn confetti_face(pick: f32, front: f32) -> vec3<f32> {
+    var colour = vec3<f32>(0.969, 0.957, 0.937);
+    if pick < 0.17 {
+        colour = vec3<f32>(0.949, 0.757, 0.306);
+    } else if pick < 0.34 {
+        colour = vec3<f32>(0.898, 0.282, 0.435);
+    } else if pick < 0.51 {
+        colour = vec3<f32>(0.247, 0.757, 0.788);
+    } else if pick < 0.68 {
+        colour = vec3<f32>(0.549, 0.776, 0.247);
+    } else if pick < 0.85 {
+        colour = vec3<f32>(0.949, 0.420, 0.357);
+    }
+    return mix(colour * vec3<f32>(0.58, 0.60, 0.64), colour, front);
+}
+
+// One depth of the shower, returned premultiplied.
+//
+// Falling is a translation, and a translation is invertible: the field lives in
+// a flow space that slides down the screen, so a piece keeps its cell while its
+// position moves, and a pixel can back-map into that space and ask which pieces
+// cover it.
+fn confetti_layer(
+    uv: vec2<f32>,
+    aspect: f32,
+    rows: f32,
+    speed: f32,
+    dim: f32,
+    salt: f32,
+    exit: f32,
+) -> vec4<f32> {
+    // Thrown rather than dropped: the exponential is the launch settling into a
+    // drift, and the exit adds an acceleration on top of it.
+    let launch = 0.22 * (1.0 - exp(-uniforms.time / 0.30));
+    let fall = uniforms.time * speed + launch + exit * exit * 0.85;
+    let flow = vec2<f32>(uv.x * aspect, uv.y - fall) * rows;
+    let cell = floor(flow);
+
+    var accumulated = vec3<f32>(0.0);
+    var coverage = 0.0;
+    for (var offset_y = -1; offset_y <= 1; offset_y += 1) {
+        for (var offset_x = -1; offset_x <= 1; offset_x += 1) {
+            let home = cell + vec2<f32>(f32(offset_x), f32(offset_y));
+            let character = hash21(home + vec2<f32>(salt, salt * 1.7));
+            // Not every cell carries a piece; a full lattice reads as a grid.
+            if character < 0.34 {
+                continue;
+            }
+
+            let jitter = vec2<f32>(fract(character * 41.0), fract(character * 613.0)) - 0.5;
+            // Sway stays within half a cell, so the nine cells read here always
+            // contain whichever piece covers this pixel.
+            let sway = sin(
+                uniforms.time * mix(0.9, 2.1, fract(character * 97.0))
+                    + fract(character * 311.0) * 6.2831853,
+            ) * 0.30;
+            let centre = home + 0.5 + vec2<f32>(jitter.x * 0.5 + sway, jitter.y * 0.5);
+
+            // Tumble. A rectangle turning about its long axis presents a width
+            // of |cos|, so it thins to a line and flashes back — one cosine,
+            // and the whole difference between confetti and falling squares.
+            let spin = uniforms.time * mix(2.4, 5.2, fract(character * 173.0))
+                + fract(character * 887.0) * 6.2831853;
+            let turn = cos(spin);
+            let tilt = fract(character * 53.0) * 6.2831853;
+            let facing = vec2<f32>(cos(tilt), sin(tilt));
+            let delta = flow - centre;
+            let along = dot(delta, facing);
+            let across = dot(delta, vec2<f32>(-facing.y, facing.x));
+
+            let half_long = mix(0.20, 0.30, fract(character * 29.0));
+            let half_short = half_long * 0.55 * abs(turn);
+            let edge = 0.035;
+            let shape = (1.0 - smoothstep(half_long - edge, half_long + edge, abs(along)))
+                * (1.0 - smoothstep(half_short - edge * 0.6, half_short + edge * 0.6, abs(across)));
+            if shape <= 0.001 {
+                continue;
+            }
+
+            var colour = confetti_face(fract(character * 1097.0), step(0.0, turn));
+            // Foil catches the light as it turns through edge-on.
+            colour += vec3<f32>(0.55, 0.55, 0.50) * pow(1.0 - abs(turn), 6.0) * 0.8;
+            colour *= dim;
+
+            // Painted in whatever order the loop runs; pieces of one layer
+            // rarely overlap, and the near layer is composited over this one.
+            let piece = shape * (1.0 - coverage);
+            accumulated += colour * piece;
+            coverage += piece;
+        }
+    }
+    return vec4<f32>(accumulated, coverage);
+}
+
+fn confetti(uv: vec2<f32>) -> vec4<f32> {
+    let aspect = uniforms.resolution.x / uniforms.resolution.y;
+    let exit = clamp(uniforms.exit_progress, 0.0, 1.0);
+
+    let far = confetti_layer(uv, aspect, 13.0, 0.30, 0.62, 7.3, exit);
+    let near = confetti_layer(uv, aspect, 8.5, 0.44, 1.0, 31.7, exit);
+    let stacked = near.a + far.a * (1.0 - near.a);
+    if stacked <= 0.001 {
+        return vec4<f32>(0.0);
+    }
+    let colour = (near.rgb + far.rgb * (1.0 - near.a)) / stacked;
+
+    // The exit stops the source rather than fading the field: a line descends
+    // the screen, the shower has run out above it, and what is below keeps
+    // falling. By the end the line has passed the bottom edge, so the screen is
+    // given back without needing a final clear.
+    let ran_out = smoothstep(exit * 1.25 - 0.14, exit * 1.25, uv.y);
+    return composite(colour, stacked * ran_out);
+}
+
 @fragment
 fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let uv = input.position.xy / uniforms.resolution;
@@ -1373,6 +1490,7 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
         case EFFECT_SPOTLIGHT: { return spotlight(uv); }
         case EFFECT_PAPER_TEAR: { return paper_tear(uv); }
         case EFFECT_ELEVATOR_DOORS: { return elevator_doors(uv); }
+        case EFFECT_CONFETTI: { return confetti(uv); }
         // An unknown id draws nothing rather than an arbitrary effect. A
         // transparent overlay is a recoverable bug; the wrong flourish on
         // stage is not.
