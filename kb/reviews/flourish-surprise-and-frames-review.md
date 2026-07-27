@@ -13,12 +13,13 @@ upstream: [flourish-surprise-and-frames]
 
 ## Implementation Status
 
-**Complete.** Both changes are in, the test count went from 81 to 95, and
-`--frames` has been run against the whole catalog with its output inspected.
+**Complete and accepted.** Both changes are in, the test count went from 81 to
+95, `--frames` has been run against the whole catalog with its output inspected,
+and the two app-level checks passed on 2026-07-27.
 
-The only outstanding items are the two checks that need the running app: that
-the shortcut keeps surprising after Surprise Me, and that it replays a named
-effect after one is chosen.
+Stickiness behaved as designed in use: the shortcut is a repeat button or a
+surprise button depending on the last thing chosen, and switching between the
+two needs nothing but choosing differently.
 
 ## Automated Verification Results
 
@@ -75,10 +76,12 @@ effect after one is chosen.
 
 ## Manual Testing Required
 
-- Choose Surprise Me, then press the shortcut several times: a different
-  flourish each press, never twice in a row.
-- Choose a named effect, then press the shortcut: that same effect replays.
-- Confirm the menu reads well with Surprise Me above the separator.
+- ~~Choose Surprise Me, then press the shortcut several times.~~ Done: a
+  different flourish each press.
+- ~~Choose a named effect, then press the shortcut.~~ Done: that effect replays.
+- Confirm the menu reads well with Surprise Me above the separator. Not
+  separately checked; the item was used from the menu, so it is at least
+  findable.
 
 ## Recommendations
 

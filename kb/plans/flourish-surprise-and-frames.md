@@ -124,9 +124,11 @@ by hand, which is worse.
 
 #### Manual Verification
 
-- [ ] Choosing Surprise Me, then pressing the shortcut repeatedly, gives
-  different effects.
-- [ ] Choosing a specific effect, then pressing the shortcut, replays that one.
+- [x] Choosing Surprise Me, then pressing the shortcut repeatedly, gives
+  different effects. Confirmed 2026-07-27.
+- [x] Choosing a specific effect, then pressing the shortcut, replays that one.
+  Confirmed 2026-07-27: the two modes coexist, so the shortcut can be either a
+  repeat button or a surprise button depending on the last thing chosen.
 
 ## Phase 2: Contact sheets
 
