@@ -27,7 +27,6 @@ remaining ideas while the first two are built.
 
 ### Functional
 
-- **Paper Tear:** a textured paper cover tears down the middle and curls away.
 - **Chalkboard:** subtle chalk diagrams clear under an eraser with a dust trail.
 - **Elevator Doors:** brushed-metal doors part with moving reflected highlights.
 - Every concept must define an intentional hold state, graceful exit, and
@@ -40,6 +39,9 @@ remaining ideas while the first two are built.
 - **Spotlight** was promoted into `flourish-spotlight` on 2026-07-26. It expands
   from wherever the light is standing rather than from the centre, which is what
   keeps it distinct from Projector Iris.
+- **Paper Tear** was promoted into `flourish-paper-tear` on 2026-07-26. Its
+  crack propagates downward so the tear opens as a V, which is what separates it
+  from Geological Strata's clean shear of a rigid material.
 
 ### Non-functional
 
