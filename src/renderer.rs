@@ -146,7 +146,7 @@ impl Scene {
         format: wgpu::TextureFormat,
         size: PhysicalSize<u32>,
     ) -> Self {
-        let seed = fresh_seed();
+        let seed = flourish::entropy::fresh_u32();
         let doom_fire = DoomFireSimulation::new(&device);
         let gravel = GravelEffect::new(&device, format, size, seed);
         let (pipeline, uniforms, bind_group) = create_pipeline(
@@ -174,6 +174,13 @@ impl Scene {
         &self.device
     }
 
+    /// The queue that owns this scene's submissions. Needed by callers that
+    /// read a rendered frame back, which has to be submitted alongside the
+    /// draw rather than through it.
+    pub const fn queue(&self) -> &wgpu::Queue {
+        &self.queue
+    }
+
     /// Retargets at a new size. The gravel pile deliberately survives this.
     pub fn resize(&mut self, size: PhysicalSize<u32>) {
         self.size = size;
@@ -188,7 +195,7 @@ impl Scene {
     /// state up front — otherwise reduced motion would fade in an empty screen
     /// and a single lit row.
     pub fn start_effect(&mut self, effect: Flourish, motion: MotionPreference) {
-        self.seed = fresh_seed();
+        self.seed = flourish::entropy::fresh_u32();
         match (effect, motion.is_reduced()) {
             (Flourish::DoomFire, false) => self.doom_fire.reset(&self.queue, self.seed),
             (Flourish::DoomFire, true) => {
@@ -474,38 +481,6 @@ fn create_pipeline(
     (pipeline, uniform_buffer, bind_group)
 }
 
-/// A fresh seed for one performance of a flourish.
-///
-/// Procedural effects are otherwise bit-identical on every run, which makes a
-/// tool built to delight an audience feel canned the second time they see it.
-/// Falls back to a fixed value if the clock is unavailable; a repeated flourish
-/// is a far smaller problem than a panic mid-presentation.
-fn fresh_seed() -> u32 {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    // The wall clock alone is not enough: its granularity is coarser than the
-    // gap between two quick calls, so back-to-back seeds can land in the same
-    // tick and repeat. A counter guarantees they always differ, while the clock
-    // keeps separate launches from sharing a sequence.
-    static COUNTER: AtomicU32 = AtomicU32::new(0);
-
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0x9e37_79b9, |elapsed| elapsed.subsec_nanos());
-    let counted = COUNTER
-        .fetch_add(1, Ordering::Relaxed)
-        .wrapping_mul(0x9e37_79b9);
-    // Avalanche the low-entropy inputs so nearby launches do not produce
-    // visually similar output.
-    let mut mixed = nanos ^ counted ^ 0x2545_f491;
-    mixed ^= mixed >> 16;
-    mixed = mixed.wrapping_mul(0x7feb_352d);
-    mixed ^= mixed >> 15;
-    mixed = mixed.wrapping_mul(0x846c_a68b);
-    mixed ^ (mixed >> 16)
-}
-
 fn select_alpha_mode(modes: &[wgpu::CompositeAlphaMode]) -> Option<wgpu::CompositeAlphaMode> {
     modes
         .contains(&wgpu::CompositeAlphaMode::PreMultiplied)
@@ -526,7 +501,7 @@ fn size_to_resolution(size: PhysicalSize<u32>) -> [f32; 2] {
 
 #[cfg(test)]
 mod tests {
-    use super::{Frame, Uniforms, fresh_seed, select_alpha_mode};
+    use super::{Frame, Uniforms, select_alpha_mode};
     use flourish::Flourish;
     use wgpu::CompositeAlphaMode;
 
@@ -592,15 +567,5 @@ mod tests {
 
         assert_eq!(catalog_ids.len(), Flourish::ALL.len() - 1);
         assert!(!catalog_ids.contains(&Flourish::GravelFall.shader_id()));
-    }
-
-    #[test]
-    fn successive_seeds_differ() {
-        // Identical seeds would make every performance a rerun of the last.
-        let seeds = (0..8).map(|_| fresh_seed()).collect::<Vec<_>>();
-        assert!(
-            seeds.windows(2).any(|pair| pair[0] != pair[1]),
-            "seeds were all identical: {seeds:?}"
-        );
     }
 }

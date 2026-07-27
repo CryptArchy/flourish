@@ -35,6 +35,18 @@ talk does not replay the same picture.
 | Kaleidoscope | Jewel-toned mirrored facets turn | Radial aperture reveal |
 | Mosaic | Colored beveled tiles drift by row | Tiles shrink away in sequence |
 
+## Surprise Me
+
+With seventeen effects, picking one from a menu mid-sentence is its own kind of
+friction. **Surprise Me** is the first item in the menu, and it sticks: once
+chosen, the global shortcut draws a different flourish every press, never
+repeating the one just played. Choose a named effect instead and the shortcut
+goes back to replaying that one.
+
+```sh
+cargo run -- --autostart=random
+```
+
 ## Dismissing a flourish
 
 A flourish is a full-screen, always-on-top window that hides the cursor, so it
@@ -88,6 +100,21 @@ path the app uses, and reports sustained milliseconds per frame against the
 machines are in
 [`kb/notes/flourish-frame-time-budget.md`](kb/notes/flourish-frame-time-budget.md).
 
+## Choosing one without playing it
+
+Deciding which flourish suits a talk should not mean launching seventeen of them
+full-screen:
+
+```sh
+cargo run --release -- --frames
+```
+
+That writes one filmstrip PNG per flourish into `./flourish-frames` — the hold
+state and four points through the exit, composited over a stand-in desktop so
+the reveal and the transparency are both visible. It renders through the same
+`Scene` the app uses, offscreen, so nothing appears on your display. Pass a
+directory to put them elsewhere: `--frames=/tmp/strips`.
+
 ## Reduced motion
 
 Flourish follows the system's reduce-motion setting. When it is on, every
@@ -117,7 +144,7 @@ menu.
 This repository contains an expanded macOS vertical slice:
 
 - Native Rust shell using `winit`, `wgpu`, and `tray-icon`
-- Menu-bar-only idle state with seventeen Flourishes and Quit actions
+- Menu-bar-only idle state with seventeen Flourishes, Surprise Me, and Quit
 - Global shortcut for summoning and dismissing from inside a full-screen deck
 - Flourishes target the display the pointer is on, across mixed-DPI layouts
 - Celebratory party-popper template icon on macOS, with color on other trays
@@ -164,7 +191,8 @@ Choose any effect from the Flourish menu-bar icon, or start one straight away:
 cargo run -- --autostart=gravel-fall
 ```
 
-`--list` prints every flourish and its slug; `--help` covers the rest.
+`--list` prints every flourish and its slug — including `random`, which asks to
+be surprised; `--help` covers the rest.
 
 ## Verify
 

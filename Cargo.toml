@@ -20,6 +20,7 @@ bytemuck = { version = "1.23", features = ["derive"] }
 global-hotkey = "0.8"
 pollster = "0.4"
 rfd = "0.17"
+png = "0.18"
 thiserror = "2"
 tray-icon = "0.24"
 wgpu = "30"
@@ -48,4 +49,3 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
 
 [dev-dependencies]
 naga = { version = "30", features = ["wgsl-in"] }
-png = "0.18"

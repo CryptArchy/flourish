@@ -1,6 +1,7 @@
 mod benchmark;
 mod cli;
 mod doom_fire;
+mod frames;
 mod gravel;
 mod hotkey;
 mod renderer;
@@ -8,7 +9,9 @@ mod target;
 
 use std::{sync::Arc, time::Duration, time::Instant};
 
-use flourish::{Flourish, MotionPreference, SignalResult, Timeline, TimelineUpdate, motion};
+use flourish::{
+    Choice, Flourish, MotionPreference, SignalResult, Timeline, TimelineUpdate, motion,
+};
 use hotkey::HotkeyBinding;
 use renderer::{FlourishRenderer, Frame, RenderOutcome};
 use target::Target;
@@ -37,18 +40,24 @@ struct App {
     started_at: Instant,
     timeline: Timeline,
     active_effect: Option<Flourish>,
-    last_effect: Flourish,
+    /// Replayed by the global shortcut. A choice rather than an effect, so
+    /// that Surprise Me keeps surprising instead of pinning its first draw.
+    last_choice: Choice,
+    /// The last flourish actually played, which a surprise will not repeat.
+    /// Outlives `active_effect`, which is cleared the moment one is dismissed.
+    previous_effect: Option<Flourish>,
     window: Option<Arc<Window>>,
     renderer: Option<FlourishRenderer>,
     tray: Option<TrayIcon>,
     hotkey: Option<HotkeyBinding>,
     effect_menu_ids: Vec<(MenuId, Flourish)>,
+    surprise_menu_id: Option<MenuId>,
     quit_menu_id: Option<MenuId>,
     motion: MotionPreference,
     motion_menu_id: Option<MenuId>,
     motion_menu_item: Option<MenuItem>,
     proxy: EventLoopProxy<UserEvent>,
-    autostart: Option<Flourish>,
+    autostart: Option<Choice>,
     /// Report the display layout and exit instead of running.
     describe_displays: bool,
     /// Set when startup fails; reported by `main` after the loop unwinds.
@@ -58,19 +67,21 @@ struct App {
 impl App {
     fn new(
         proxy: EventLoopProxy<UserEvent>,
-        autostart: Option<Flourish>,
+        autostart: Option<Choice>,
         motion: MotionPreference,
     ) -> Self {
         Self {
             started_at: Instant::now(),
             timeline: Timeline::idle(),
             active_effect: None,
-            last_effect: autostart.unwrap_or(Flourish::Curtain),
+            last_choice: autostart.unwrap_or(Choice::Effect(Flourish::Curtain)),
+            previous_effect: None,
             window: None,
             renderer: None,
             tray: None,
             hotkey: None,
             effect_menu_ids: Vec::new(),
+            surprise_menu_id: None,
             quit_menu_id: None,
             motion,
             motion_menu_id: None,
@@ -84,6 +95,17 @@ impl App {
 
     fn now(&self) -> Duration {
         self.started_at.elapsed()
+    }
+
+    /// Plays whatever `choice` settles on, and remembers the choice itself.
+    ///
+    /// Remembering the choice rather than its outcome is what makes Surprise Me
+    /// sticky: the shortcut repeats the intent, so it draws a new flourish each
+    /// press instead of pinning whichever one came up first.
+    fn play_choice(&mut self, event_loop: &ActiveEventLoop, choice: Choice) {
+        self.last_choice = choice;
+        let effect = choice.resolve(self.previous_effect);
+        self.start_effect(event_loop, effect);
     }
 
     /// Starts `effect`, replacing whatever is on screen.
@@ -105,7 +127,7 @@ impl App {
         self.timeline = Timeline::new(effect.exit_duration(), effect.hold_limit());
         self.timeline.start(now);
         self.active_effect = Some(effect);
-        self.last_effect = effect;
+        self.previous_effect = Some(effect);
         // After present_on, so a warm-up sizes itself to the display the
         // flourish will actually appear on.
         if let Some(renderer) = &mut self.renderer {
@@ -122,7 +144,9 @@ impl App {
         if self.timeline.is_active() {
             self.handle_signal(self.now());
         } else {
-            self.start_effect(event_loop, self.last_effect);
+            // Resolved here rather than remembered, so a sticky surprise draws
+            // a new flourish on every press.
+            self.play_choice(event_loop, self.last_choice);
         }
     }
 
@@ -165,6 +189,13 @@ impl App {
 
     fn create_tray(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let menu = Menu::new();
+        // First, because with seventeen effects the point of the menu is
+        // usually "give me one" rather than "give me that one".
+        let surprise = MenuItem::new("Surprise Me", true, None);
+        menu.append(&surprise)?;
+        self.surprise_menu_id = Some(surprise.id().clone());
+        menu.append(&PredefinedMenuItem::separator())?;
+
         for effect in Flourish::ALL.iter().copied() {
             let item = MenuItem::new(effect.label(), true, None);
             menu.append(&item)?;
@@ -385,8 +416,8 @@ impl ApplicationHandler<UserEvent> for App {
             ),
         }
 
-        if let Some(effect) = self.autostart {
-            self.start_effect(event_loop, effect);
+        if let Some(choice) = self.autostart {
+            self.play_choice(event_loop, choice);
         }
     }
 
@@ -399,13 +430,16 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Menu(id) if self.motion_menu_id.as_ref() == Some(&id) => {
                 self.set_motion(self.motion.toggled());
             }
+            UserEvent::Menu(id) if self.surprise_menu_id.as_ref() == Some(&id) => {
+                self.play_choice(event_loop, Choice::Surprise);
+            }
             UserEvent::Menu(id) => {
                 let selected = self
                     .effect_menu_ids
                     .iter()
                     .find_map(|(menu_id, effect)| (menu_id == &id).then_some(*effect));
                 if let Some(effect) = selected {
-                    self.start_effect(event_loop, effect);
+                    self.play_choice(event_loop, Choice::Effect(effect));
                 }
             }
         }
@@ -516,6 +550,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Offscreen, so it needs no event loop, window, or display at all.
         cli::Invocation::Benchmark => {
             benchmark::run()?;
+            return Ok(());
+        }
+        // Also offscreen: the whole point is to see the catalog without one
+        // taking over the display.
+        cli::Invocation::Frames(directory) => {
+            frames::run(&directory)?;
             return Ok(());
         }
         cli::Invocation::PrintAndExit(message) => {

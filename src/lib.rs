@@ -1,6 +1,7 @@
 //! Shared, renderer-independent Flourish behavior.
 
 pub mod display;
+pub mod entropy;
 pub mod icon;
 pub mod motion;
 mod timeline;
@@ -100,7 +101,79 @@ flourish_catalog! {
     Mosaic           { slug: "mosaic",            label: "Mosaic",            shader_id: 5,  exit_ms: 1_500, },
 }
 
+/// The slug that asks for a flourish chosen at random.
+///
+/// Deliberately not a `Flourish` variant: it is a way of choosing one, not one
+/// of the things that can be chosen, and making it a variant would put it in
+/// `ALL` and let it be drawn by the picker itself.
+pub const SURPRISE_SLUG: &str = "random";
+
+/// What to play, once something asks for a flourish.
+///
+/// Carried instead of a bare [`Flourish`] so that "surprise me" survives being
+/// repeated: the global shortcut replays the *choice*, so a surprise keeps
+/// surprising while a named effect keeps replaying.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum Choice {
+    /// This exact flourish, every time.
+    Effect(Flourish),
+    /// Any flourish but the one just played.
+    Surprise,
+}
+
+impl Choice {
+    /// Settles the choice into something to draw.
+    ///
+    /// `previous` is what played last, if anything, and is never drawn again
+    /// immediately — repeating is the one outcome a surprise cannot have.
+    #[must_use]
+    pub fn resolve(self, previous: Option<Flourish>) -> Flourish {
+        match self {
+            Self::Effect(effect) => effect,
+            Self::Surprise => Flourish::surprise(previous),
+        }
+    }
+
+    /// Resolves a command-line slug, including the surprise slug.
+    #[must_use]
+    pub fn from_slug(slug: &str) -> Option<Self> {
+        if slug == SURPRISE_SLUG {
+            return Some(Self::Surprise);
+        }
+        Flourish::from_slug(slug).map(Self::Effect)
+    }
+}
+
 impl Flourish {
+    /// A flourish drawn at random, never `avoid`.
+    ///
+    /// One re-roll rather than a loop: with a catalog this size the bias that
+    /// leaves is far below anything an audience could notice, and a loop over a
+    /// hypothetical one-effect catalog would never end.
+    #[must_use]
+    pub fn surprise(avoid: Option<Self>) -> Self {
+        let draw = || {
+            let index = entropy::fresh_u32() as usize % Self::ALL.len();
+            Self::ALL[index]
+        };
+
+        let drawn = draw();
+        if Some(drawn) == avoid && Self::ALL.len() > 1 {
+            let second = draw();
+            // The re-roll can land on `avoid` again. Stepping to the next
+            // effect is cheap, always different, and cannot fail.
+            if Some(second) == avoid {
+                let index = Self::ALL
+                    .iter()
+                    .position(|effect| Some(*effect) == avoid)
+                    .unwrap_or(0);
+                return Self::ALL[(index + 1) % Self::ALL.len()];
+            }
+            return second;
+        }
+        drawn
+    }
+
     /// Resolves a command-line slug against the catalog.
     #[must_use]
     pub fn from_slug(slug: &str) -> Option<Self> {
@@ -126,8 +199,63 @@ impl Flourish {
 
 #[cfg(test)]
 mod catalog_tests {
-    use super::Flourish;
+    use super::{Choice, Flourish, SURPRISE_SLUG};
     use std::collections::HashSet;
+
+    #[test]
+    fn a_surprise_never_repeats_what_just_played() {
+        // The one outcome a surprise cannot have. Every effect is tried as the
+        // previous one, because the re-roll path differs per index.
+        for previous in Flourish::ALL.iter().copied() {
+            for _ in 0..200 {
+                assert_ne!(
+                    Flourish::surprise(Some(previous)),
+                    previous,
+                    "surprise repeated {}",
+                    previous.label()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_surprise_can_reach_every_flourish() {
+        // A picker that quietly favoured one end of the catalog would still
+        // pass the test above while making most of the catalog unreachable.
+        let drawn: HashSet<Flourish> = (0..4_000).map(|_| Flourish::surprise(None)).collect();
+        assert_eq!(
+            drawn.len(),
+            Flourish::ALL.len(),
+            "some flourishes were never drawn in 4000 tries"
+        );
+    }
+
+    #[test]
+    fn the_surprise_slug_is_not_a_flourish() {
+        // If it were a catalog entry it would appear in the menu twice and the
+        // picker could draw "random" as a thing to play.
+        assert_eq!(Flourish::from_slug(SURPRISE_SLUG), None);
+        assert_eq!(Choice::from_slug(SURPRISE_SLUG), Some(Choice::Surprise));
+    }
+
+    #[test]
+    fn a_named_choice_resolves_to_itself_regardless_of_history() {
+        for effect in Flourish::ALL.iter().copied() {
+            assert_eq!(Choice::Effect(effect).resolve(None), effect);
+            assert_eq!(Choice::Effect(effect).resolve(Some(effect)), effect);
+        }
+    }
+
+    #[test]
+    fn every_slug_still_resolves_through_choice() {
+        for effect in Flourish::ALL.iter().copied() {
+            assert_eq!(
+                Choice::from_slug(effect.slug()),
+                Some(Choice::Effect(effect))
+            );
+        }
+        assert_eq!(Choice::from_slug("nope"), None);
+    }
 
     #[test]
     fn catalog_metadata_is_unique_and_presentation_safe() {

@@ -3,14 +3,14 @@
 //! Deliberately hand-rolled: the surface is three flags, and a dependency-free
 //! parser keeps a presentation tool's startup path trivial to audit.
 
-use flourish::{Flourish, MotionPreference};
+use flourish::{Choice, Flourish, MotionPreference, SURPRISE_SLUG};
 
 /// What the command line asked the program to do.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Invocation {
     /// Run normally, optionally playing a flourish immediately.
     Run {
-        autostart: Option<Flourish>,
+        autostart: Option<Choice>,
         /// `None` means the command line did not say, so ask the system.
         motion: Option<MotionPreference>,
     },
@@ -19,11 +19,16 @@ pub enum Invocation {
     DescribeDisplays,
     /// Measure how long each flourish takes to draw, then exit.
     Benchmark,
+    /// Write a contact sheet of every flourish to this directory, then exit.
+    Frames(String),
     /// Print text and exit successfully.
     PrintAndExit(String),
     /// Print an error and exit unsuccessfully.
     Fail(String),
 }
+
+/// Where `--frames` writes when the command line does not say.
+pub const DEFAULT_FRAMES_DIR: &str = "flourish-frames";
 
 const USAGE: &str = "\
 Flourish — theatrical punctuation for presentations.
@@ -34,11 +39,16 @@ USAGE:
 OPTIONS:
     --autostart[=<FLOURISH>]  Play a flourish immediately at launch.
                               Defaults to the signature Curtain.
+                              Pass `random` to be surprised.
     --list                    List every flourish and its slug.
     --displays                Show the display layout, where the pointer is,
                               and which display a flourish would target.
     --benchmark               Measure how long each flourish takes to draw,
                               from 1080p to 5K, against the frame budget.
+    --frames[=<DIR>]          Write a filmstrip PNG of every flourish — its
+                              hold state and four points through its exit —
+                              without playing anything on screen.
+                              Defaults to ./flourish-frames.
     --reduce-motion           Hold each flourish still and cross-fade instead
                               of animating. Overrides the system setting.
     --full-motion             Animate even if the system asks for reduced
@@ -49,7 +59,11 @@ OPTIONS:
 Without either motion flag, Flourish follows the system's reduce-motion
 setting, and the menu can toggle it at any time.
 
-Once running, Flourish lives in the menu bar. Choose an effect from its menu,
+Once running, Flourish lives in the menu bar. Choose Surprise Me for a flourish
+you did not pick, and the global shortcut keeps surprising you; choose a named
+effect and the shortcut replays that one.
+
+Choose an effect from its menu,
 then click or press any key to begin its exit; signal again during the exit to
 remove it at once. An unattended flourish dismisses itself.";
 
@@ -78,8 +92,17 @@ where
             "--list" => return Invocation::PrintAndExit(catalog_listing()),
             "--displays" => return Invocation::DescribeDisplays,
             "--benchmark" => return Invocation::Benchmark,
-            "--autostart" => autostart = Some(Flourish::Curtain),
+            "--frames" => return Invocation::Frames(DEFAULT_FRAMES_DIR.to_owned()),
+            "--autostart" => autostart = Some(Choice::Effect(Flourish::Curtain)),
             _ => {
+                if let Some(directory) = argument.strip_prefix("--frames=") {
+                    if directory.is_empty() {
+                        return Invocation::Fail(
+                            "--frames= needs a directory, or use bare --frames".to_owned(),
+                        );
+                    }
+                    return Invocation::Frames(directory.to_owned());
+                }
                 let Some(slug) = argument.strip_prefix("--autostart=") else {
                     return Invocation::Fail(format!(
                         "unrecognized argument {argument:?}\n\n\
@@ -88,7 +111,7 @@ where
                 };
                 // An unknown slug used to be silently ignored, leaving the app
                 // running with no flourish and no explanation.
-                let Some(effect) = Flourish::from_slug(slug) else {
+                let Some(effect) = Choice::from_slug(slug) else {
                     return Invocation::Fail(format!(
                         "unknown flourish {slug:?}\n\n{}",
                         catalog_listing()
@@ -110,18 +133,68 @@ fn catalog_listing() -> String {
         .map(|effect| effect.slug().len())
         .max()
         .unwrap_or(0);
+    let width = width.max(SURPRISE_SLUG.len());
     let mut listing = String::from("Available flourishes:\n");
     for effect in Flourish::ALL.iter().copied() {
         // Writing into a String is infallible.
         let _ = writeln!(listing, "    {:width$}  {}", effect.slug(), effect.label());
     }
+    let _ = writeln!(
+        listing,
+        "    {SURPRISE_SLUG:width$}  Surprise Me — any of the above"
+    );
     listing
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Invocation, parse};
-    use flourish::Flourish;
+    use super::{DEFAULT_FRAMES_DIR, Invocation, parse};
+    use flourish::{Choice, Flourish, SURPRISE_SLUG};
+
+    #[test]
+    fn the_surprise_slug_asks_to_be_surprised() {
+        assert_eq!(
+            parse([format!("--autostart={SURPRISE_SLUG}")]),
+            Invocation::Run {
+                autostart: Some(Choice::Surprise),
+                motion: None
+            }
+        );
+    }
+
+    #[test]
+    fn the_listing_offers_the_surprise_slug() {
+        // Someone reaching for --list is looking for what they can pass to
+        // --autostart, and `random` is one of the answers.
+        let Invocation::PrintAndExit(listing) = parse(["--list"]) else {
+            panic!("--list must print and exit");
+        };
+        assert!(listing.contains(SURPRISE_SLUG));
+    }
+
+    #[test]
+    fn bare_frames_uses_the_documented_default() {
+        assert_eq!(
+            parse(["--frames"]),
+            Invocation::Frames(DEFAULT_FRAMES_DIR.to_owned())
+        );
+    }
+
+    #[test]
+    fn frames_takes_a_directory() {
+        assert_eq!(
+            parse(["--frames=/tmp/strips"]),
+            Invocation::Frames("/tmp/strips".to_owned())
+        );
+    }
+
+    #[test]
+    fn an_empty_frames_directory_fails_rather_than_writing_somewhere_surprising() {
+        let Invocation::Fail(message) = parse(["--frames="]) else {
+            panic!("--frames= with no directory must be rejected");
+        };
+        assert!(message.contains("--frames"));
+    }
 
     #[test]
     fn no_arguments_runs_without_autostart() {
@@ -139,7 +212,7 @@ mod tests {
         assert_eq!(
             parse(["--autostart"]),
             Invocation::Run {
-                autostart: Some(Flourish::Curtain),
+                autostart: Some(Choice::Effect(Flourish::Curtain)),
                 motion: None
             }
         );
@@ -151,7 +224,7 @@ mod tests {
             assert_eq!(
                 parse([format!("--autostart={}", effect.slug())]),
                 Invocation::Run {
-                    autostart: Some(effect),
+                    autostart: Some(Choice::Effect(effect)),
                     motion: None
                 },
                 "slug {} did not round-trip through the CLI",
