@@ -16,7 +16,7 @@ upstream: [flourish-future-catalog, flourish-spotlight]
 
 Promote **Paper Tear** out of the approved future catalog: a textured sheet
 covering the screen that tears down the middle and curls away. Fourth of the
-original set to graduate, leaving Chalkboard.
+original set to graduate, leaving Chalkboard and Elevator Doors.
 
 ## Current State Analysis
 
@@ -183,7 +183,7 @@ need more than one pass to read as paper rather than as a shaded band — scale
 ### Changes Required
 
 - Move Paper Tear into the future catalog's promoted section, leaving
-  Chalkboard as the last of the original four.
+  Chalkboard and Elevator Doors in its remaining list.
 - Re-measure `kb/notes/flourish-frame-time-budget.md` in a single run.
 
 ### Success Criteria

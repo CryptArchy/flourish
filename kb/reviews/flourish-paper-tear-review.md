@@ -15,8 +15,8 @@ upstream: [flourish-paper-tear]
 
 **Accepted after two rounds of on-screen feedback and a rebuild.**
 Paper Tear is registered, drawing, documented, and promoted out of the future
-catalog, leaving Chalkboard as the last of the original four. Every automated
-check passes.
+catalog, leaving Chalkboard and Elevator Doors in its remaining list. Every
+automated check passes.
 
 The first viewing found a ghost seam and two halves that looked like separate
 sheets tearing at different times. The second viewing found the ghost still
@@ -166,7 +166,10 @@ Paper Tear is the first effect where that cost something. Any future effect with
 two symmetric halves inherits the same trap — mirror geometry shaded by a
 mirror-symmetric function reads as two independently lit objects.
 
-Chalkboard is the last of the original four and the only one that needs a
+Chalkboard and Elevator Doors remain. Chalkboard is the one that needs a
 decision before it can be planned: what the chalk diagrams actually are. Every
 effect in the catalog is texture and motion; that one is the first that would
 have to draw content.
+
+*Resolved 2026-07-27: Chalkboard was declined for exactly that reason. See the
+future catalog's Declined section.*

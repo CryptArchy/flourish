@@ -15,8 +15,8 @@ source: file
 ## Description
 
 Preserve the remaining approved follow-up Flourish concepts so each can graduate
-into a visual plan and implementation. Two of the original four are left; see
-Promoted for what has already graduated.
+into a visual plan and implementation. One of the original four is left; see
+Promoted for what has graduated and Declined for what will not.
 
 ## Context
 
@@ -27,10 +27,18 @@ remaining ideas while the first two are built.
 
 ### Functional
 
-- **Chalkboard:** subtle chalk diagrams clear under an eraser with a dust trail.
 - **Elevator Doors:** brushed-metal doors part with moving reflected highlights.
 - Every concept must define an intentional hold state, graceful exit, and
   second-signal immediate kill before implementation.
+
+### Declined
+
+- **Chalkboard** will not be built (2026-07-27). It does not fit the catalog.
+  Every other flourish is texture and motion over an abstract field; Chalkboard
+  is the only one that would have to draw *content* — legible diagrams — and a
+  presentation overlay that draws its own diagrams competes with the deck it is
+  punctuating rather than punctuating it. The concept is recorded here rather
+  than deleted, so it does not get re-proposed as a fresh idea.
 
 ### Promoted
 
