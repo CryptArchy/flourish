@@ -14,9 +14,9 @@ source: file
 
 ## Description
 
-Preserve the four remaining approved follow-up Flourish concepts after
-Projector Iris, Geological Strata, Frosted Glass, and CRT Shutdown so each can
-graduate into a visual plan and implementation.
+Preserve the remaining approved follow-up Flourish concepts so each can graduate
+into a visual plan and implementation. Two of the original four are left; see
+Promoted for what has already graduated.
 
 ## Context
 
@@ -28,7 +28,6 @@ remaining ideas while the first two are built.
 ### Functional
 
 - **Paper Tear:** a textured paper cover tears down the middle and curls away.
-- **Spotlight:** a restrained searching stage light expands to reveal the screen.
 - **Chalkboard:** subtle chalk diagrams clear under an eraser with a dust trail.
 - **Elevator Doors:** brushed-metal doors part with moving reflected highlights.
 - Every concept must define an intentional hold state, graceful exit, and
@@ -38,6 +37,9 @@ remaining ideas while the first two are built.
 
 - **CRT Shutdown** and **Frosted Glass** were promoted into
   `flourish-frosted-crt-depth-layers` on 2026-07-20.
+- **Spotlight** was promoted into `flourish-spotlight` on 2026-07-26. It expands
+  from wherever the light is standing rather than from the centre, which is what
+  keeps it distinct from Projector Iris.
 
 ### Non-functional
 
