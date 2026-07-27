@@ -4,10 +4,12 @@ type: ticket
 project: flourish
 tags: [catalog, visual-design, presentations, backlog]
 status: final
-step: open
+step: done
 author: Christopher Andrews
 created_date: 2026-07-18
+closed_date: 2026-07-27
 source: file
+closed_reason: All six concepts resolved: five promoted and shipped, Chalkboard declined
 ---
 
 # Flourish Future Catalog
@@ -15,8 +17,8 @@ source: file
 ## Description
 
 Preserve the remaining approved follow-up Flourish concepts so each can graduate
-into a visual plan and implementation. One of the original four is left; see
-Promoted for what has graduated and Declined for what will not.
+into a visual plan and implementation. **All of them have now been resolved:**
+five promoted and shipped, one declined. See Promoted and Declined.
 
 ## Context
 
@@ -27,7 +29,7 @@ remaining ideas while the first two are built.
 
 ### Functional
 
-- **Elevator Doors:** brushed-metal doors part with moving reflected highlights.
+- Nothing remains. Every concept is either promoted or declined below.
 - Every concept must define an intentional hold state, graceful exit, and
   second-signal immediate kill before implementation.
 
@@ -50,6 +52,10 @@ remaining ideas while the first two are built.
 - **Paper Tear** was promoted into `flourish-paper-tear` on 2026-07-26. Its
   crack propagates downward so the tear opens as a V, which is what separates it
   from Geological Strata's clean shear of a rigid material.
+- **Elevator Doors** was promoted into `flourish-elevator-doors` on 2026-07-27.
+  It parts from the centre as Curtain does, and earns the overlap by being its
+  opposite in every respect that carries the movement: rigid against draped,
+  one driven motion profile against fabric lag, specular against diffuse.
 
 ### Non-functional
 
@@ -67,9 +73,13 @@ parallax.
 
 ### Automated Verification
 
-- [ ] Each promoted concept receives a finalized plan with catalog metadata,
-  shader validation, and lifecycle coverage.
+- [x] Each promoted concept receives a finalized plan with catalog metadata,
+  shader validation, and lifecycle coverage. Four plans cover the five:
+  `flourish-frosted-crt-depth-layers` (CRT Shutdown, Frosted Glass),
+  `flourish-spotlight`, `flourish-paper-tear`, `flourish-elevator-doors`.
 
 ### Manual Verification
 
-- [ ] Each effect remains distinct and useful as presentation punctuation.
+- [x] Each effect remains distinct and useful as presentation punctuation. The
+  one genuine question was Elevator Doors against Curtain, both parting from the
+  centre; viewed on 2026-07-27 and they read as different effects.

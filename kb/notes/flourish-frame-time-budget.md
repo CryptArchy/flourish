@@ -39,7 +39,8 @@ Apple M5 Max (integrated, Metal). Sustained milliseconds per frame.
 | Curtain | 0.08 | 0.13 | 0.25 | 0.27 | 0.46 |
 | Marquee Bulbs | 0.41 | 0.70 | 1.44 | 1.54 | 2.72 |
 | Spotlight | 0.08 | 0.12 | 0.23 | 0.25 | 0.43 |
-| Projector Iris | 0.06 | 0.10 | 0.18 | 0.19 | 0.32 |
+| Projector Iris | 0.06 | 0.09 | 0.18 | 0.19 | 0.32 |
+| Elevator Doors | 0.08 | 0.12 | 0.23 | 0.25 | 0.43 |
 | Geological Strata | 0.12 | 0.20 | 0.39 | 0.42 | 0.72 |
 | Paper Tear | 0.15 | 0.25 | 0.52 | 0.55 | 0.96 |
 | **Frosted Glass** | **0.63** | **1.09** | **2.24** | **2.41** | **4.25** |
@@ -53,8 +54,8 @@ Apple M5 Max (integrated, Metal). Sustained milliseconds per frame.
 | Kaleidoscope | 0.06 | 0.09 | 0.17 | 0.18 | 0.32 |
 | Mosaic | 0.05 | 0.08 | 0.14 | 0.15 | 0.25 |
 
-Re-measured in one run as Marquee Bulbs, Constellation, Spotlight, and Paper
-Tear landed.
+Re-measured in one run as Marquee Bulbs, Constellation, Spotlight, Paper Tear,
+and Elevator Doors landed.
 Every pre-existing row reproduces its original value to within a hundredth of a
 millisecond, which is the check that the catalog's growth costs the effects
 already in it nothing.
