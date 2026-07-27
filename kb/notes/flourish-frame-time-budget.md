@@ -36,32 +36,36 @@ Apple M5 Max (integrated, Metal). Sustained milliseconds per frame.
 
 | Flourish | 1080p | 1440p | MBP 16" | 4K | 5K |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Curtain | 0.08 | 0.13 | 0.25 | 0.27 | 0.46 |
-| Marquee Bulbs | 0.41 | 0.70 | 1.44 | 1.54 | 2.72 |
-| Spotlight | 0.08 | 0.12 | 0.23 | 0.25 | 0.43 |
-| Projector Iris | 0.06 | 0.09 | 0.18 | 0.19 | 0.32 |
-| Elevator Doors | 0.08 | 0.12 | 0.23 | 0.25 | 0.43 |
-| Geological Strata | 0.12 | 0.20 | 0.39 | 0.42 | 0.72 |
-| Paper Tear | 0.15 | 0.25 | 0.52 | 0.55 | 0.96 |
-| **Frosted Glass** | **0.63** | **1.09** | **2.24** | **2.41** | **4.25** |
-| CRT Shutdown | 0.06 | 0.07 | 0.12 | 0.13 | 0.22 |
-| Pond Ripples | 0.14 | 0.23 | 0.46 | 0.50 | 0.87 |
-| Fire | 0.10 | 0.17 | 0.33 | 0.35 | 0.61 |
-| Doom Fire | 0.04 | 0.05 | 0.09 | 0.10 | 0.16 |
-| Gravel Fall | 0.04 | 0.05 | 0.06 | 0.06 | 0.10 |
-| Constellation | 0.50 | 0.86 | 1.76 | 1.89 | 3.33 |
-| Blackout | 0.03 | 0.04 | 0.07 | 0.08 | 0.12 |
-| Kaleidoscope | 0.06 | 0.09 | 0.17 | 0.18 | 0.32 |
+| Curtain | 0.08 | 0.13 | 0.25 | 0.27 | 0.47 |
+| Confetti | 0.46 | 0.77 | 1.58 | 1.73 | 2.99 |
+| Marquee Bulbs | 0.41 | 0.71 | 1.44 | 1.55 | 2.73 |
+| Spotlight | 0.08 | 0.13 | 0.23 | 0.25 | 0.43 |
+| Projector Iris | 0.06 | 0.09 | 0.18 | 0.19 | 0.33 |
+| Elevator Doors | 0.08 | 0.12 | 0.24 | 0.25 | 0.43 |
+| Geological Strata | 0.12 | 0.20 | 0.39 | 0.42 | 0.73 |
+| Paper Tear | 0.15 | 0.25 | 0.51 | 0.55 | 0.96 |
+| **Frosted Glass** | **0.63** | **1.09** | **2.25** | **2.42** | **4.36** |
+| CRT Shutdown | 0.05 | 0.07 | 0.13 | 0.13 | 0.23 |
+| Pond Ripples | 0.15 | 0.24 | 0.48 | 0.51 | 0.89 |
+| Fire | 0.11 | 0.17 | 0.33 | 0.36 | 0.62 |
+| Doom Fire | 0.06 | 0.05 | 0.10 | 0.10 | 0.16 |
+| Gravel Fall | 0.06 | 0.07 | 0.07 | 0.08 | 0.10 |
+| Constellation | 0.50 | 0.87 | 1.77 | 1.90 | 3.37 |
+| Blackout | 0.05 | 0.06 | 0.07 | 0.08 | 0.13 |
+| Kaleidoscope | 0.07 | 0.09 | 0.18 | 0.19 | 0.32 |
 | Mosaic | 0.05 | 0.08 | 0.14 | 0.15 | 0.25 |
 
 Re-measured in one run as Marquee Bulbs, Constellation, Spotlight, Paper Tear,
-and Elevator Doors landed.
-Every pre-existing row reproduces its original value to within a hundredth of a
-millisecond, which is the check that the catalog's growth costs the effects
-already in it nothing.
+Elevator Doors, and Confetti landed.
+Every row is from that one run; none are carried over. The pre-existing rows
+reproduce their previous values to within a few hundredths of a millisecond —
+Frosted Glass is the largest mover at 0.11 ms, about 2.5%, which is ordinary
+run-to-run variation for the most expensive shader in the catalog. That
+agreement is the check that the catalog's growth costs the effects already in
+it nothing.
 
 Budget is 16.67 ms at 60Hz and 8.33 ms at 120Hz. Worst case is Frosted Glass at
-5K, 4.25 ms — about half the 120Hz budget.
+5K, 4.36 ms — about half the 120Hz budget.
 
 ## What the numbers say
 
@@ -70,12 +74,16 @@ anything else, which is what two nine-sample Voronoi passes plus five
 domain-warped blooms per pixel buys. It was simply nowhere near expensive
 enough to matter on this GPU.
 
-**The two neighbourhood effects are next, and not close.** Marquee Bulbs and
-Constellation each read a 3x3 cell neighbourhood per pixel, which puts them
-second and third at 2.73 ms and 3.33 ms at 5K — still under Frosted Glass, and
-still inside the 120Hz budget. A per-pixel neighbourhood loop is the shape of
-shader that lands in this band; anything wider should be measured before it is
-added.
+**The neighbourhood effects are next, and not close.** Constellation, Confetti,
+and Marquee Bulbs each read a 3x3 cell neighbourhood per pixel — Confetti reads
+two, one per depth layer — which puts them second, third, and fourth at 3.37,
+2.99, and 2.73 ms at 5K. All still under Frosted Glass and inside the 120Hz
+budget. A per-pixel neighbourhood loop is the shape of shader that lands in this
+band; anything wider should be measured before it is added.
+
+Confetti is the useful data point on how much a second layer costs: two 3x3
+loops of pure arithmetic land near one 3x3 loop that also samples noise. The
+loops are not what is expensive.
 
 **What an effect looks like predicts nothing; what it samples predicts
 everything.** Spotlight fills the screen with light, haze, and a moving beam and
